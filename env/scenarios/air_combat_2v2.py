@@ -22,6 +22,10 @@ class Scenario(BaseScenario):
             if hasattr(agent, 'last_min_dist'): delattr(agent, 'last_min_dist')
             agent.hp, agent.is_dead, agent.last_action, agent.done = 100.0, False, np.zeros(3), False
             agent.just_killed_by_enemy = False
+            agent.hit_enemy_this_step = False
+            agent.kill_enemy_this_step = False
+            agent.killed_by_enemy_this_step = False
+            agent.won_this_step = False
             if agent.team == 1: agent.combat_mode, agent.tactic = False, None
             agent.color = np.array([0.85, 0.35, 0.35]) if agent.team == 0 else np.array([0.35, 0.35, 0.85])
             agent.state.p_pos = np.random.uniform(-5, -2, 2) if agent.team == 0 else np.random.uniform(2, 5, 2)
@@ -79,28 +83,91 @@ class Scenario(BaseScenario):
         for teammate in world.agents:
             if teammate.team == 0 and not teammate.is_dead:
                 teammate.done = True
+                teammate.won_this_step = True
+
+    def _reset_step_event_flags(self, world):
+        for agent in world.agents:
+            agent.hit_enemy_this_step = False
+            agent.kill_enemy_this_step = False
+            agent.killed_by_enemy_this_step = False
+            agent.won_this_step = False
+            agent.just_killed_by_enemy = False
+
+    def _select_attack_target(self, attacker, world):
+        if attacker.is_dead:
+            return None
+
+        targets = [a for a in world.agents if a.team != attacker.team and not a.is_dead]
+        if not targets:
+            return None
+
+        if attacker.team == 1:
+            attack_range = 3.5
+            attack_angle = math.pi / 6
+        else:
+            attack_range = 4.5
+            attack_angle = math.pi / 4
+
+        target = min(
+            targets,
+            key=lambda other: math.sqrt(
+                (other.state.p_pos[0] - attacker.state.p_pos[0]) ** 2 +
+                (other.state.p_pos[1] - attacker.state.p_pos[1]) ** 2 +
+                (other.state.z_pos - attacker.state.z_pos) ** 2
+            )
+        )
+        distance, ata = fast_compute_distance_and_angle_scalar(
+            attacker.state.p_pos[0], attacker.state.p_pos[1], attacker.state.z_pos,
+            target.state.p_pos[0], target.state.p_pos[1], target.state.z_pos,
+            attacker.state.yaw, attacker.state.pitch
+        )
+        if distance < attack_range and ata < attack_angle:
+            return target, distance, ata
+        return None
+
+    def resolve_combat(self, world):
+        self._reset_step_event_flags(world)
+
+        pending_damage = {}
+        attackers_by_target = {}
+        live_attackers = [agent for agent in world.agents if not agent.is_dead]
+
+        for attacker in live_attackers:
+            attack_event = self._select_attack_target(attacker, world)
+            if attack_event is None:
+                continue
+
+            target, distance, ata = attack_event
+            attacker.hit_enemy_this_step = True
+            pending_damage[target] = pending_damage.get(target, 0.0) + 20.0
+            attackers_by_target.setdefault(target, []).append((attacker, ata, distance, attacker.name))
+
+        for target, damage in pending_damage.items():
+            if target.is_dead:
+                continue
+
+            target.hp -= damage
+            if target.hp <= 0:
+                target.is_dead = True
+                target.done = True
+                target.killed_by_enemy_this_step = True
+                target.just_killed_by_enemy = True
+
+                killer = min(attackers_by_target[target], key=lambda item: (item[1], item[2], item[3]))[0]
+                killer.kill_enemy_this_step = True
+
+        blue_alive = [agent for agent in world.agents if agent.team == 1 and not agent.is_dead]
+        if not blue_alive:
+            self._mark_red_team_done(world)
 
     def reward(self, agent, world):
         if agent.is_dead:
-            if getattr(agent, 'just_killed_by_enemy', False):
-                agent.just_killed_by_enemy = False
+            if getattr(agent, 'killed_by_enemy_this_step', False):
                 return -20.0
             return 0.0
 
         # 蓝方规则机：只负责攻击逻辑，不给学习奖励
         if agent.team == 1:
-            reds = [r for r in world.agents if r.team == 0 and not r.is_dead]
-            if reds:
-                d, t_red = min([(math.sqrt(
-                    (r.state.p_pos[0] - agent.state.p_pos[0]) ** 2 + (r.state.p_pos[1] - agent.state.p_pos[1]) ** 2 + (
-                                r.state.z_pos - agent.state.z_pos) ** 2), r) for r in reds], key=lambda x: x[0])
-                _, ata = fast_compute_distance_and_angle_scalar(agent.state.p_pos[0], agent.state.p_pos[1],
-                                                                agent.state.z_pos, t_red.state.p_pos[0],
-                                                                t_red.state.p_pos[1], t_red.state.z_pos,
-                                                                agent.state.yaw, agent.state.pitch)
-                if d < 3.5 and ata < math.pi / 6:
-                    t_red.hp -= 20.0
-                    if t_red.hp <= 0: t_red.is_dead, t_red.done, t_red.just_killed_by_enemy = True, True, True
             return 0.0
 
         rew = 0.0
@@ -116,13 +183,15 @@ class Scenario(BaseScenario):
         # 3. 动作平滑
         if hasattr(agent.action, 'u'):
             rew -= 0.02 * np.sum(np.square(agent.action.u - agent.last_action))
-            agent.last_action = np.copy(agent.action.u)
 
         ens = [e for e in world.agents if e.team == 1 and not e.is_dead]
 
         #4.全歼奖励
         if not ens:
-            self._mark_red_team_done(world)
+            if getattr(agent, 'hit_enemy_this_step', False):
+                rew += 15.0
+                if getattr(agent, 'kill_enemy_this_step', False):
+                    rew += 120.0
             return rew + 60.0
 
         d_min, t_en = min([(math.sqrt(
@@ -143,13 +212,10 @@ class Scenario(BaseScenario):
         if d_min < 15.0:
             dist_factor = max(0.0, (15.0 - d_min) / 15.0)
             rew += (math.pi - ata) / math.pi * 2.0 * dist_factor# 瞄准
-            if ata < math.pi / 4 and d_min < 4.5:  # 真正进入攻击窗口时，奖励更高
+            if getattr(agent, 'hit_enemy_this_step', False):
                 rew += 15.0
                 am_i_attacking = True
-                t_en.hp -= 20.0
-                if t_en.hp <= 0:
-                    t_en.is_dead = True
-                    t_en.done = True
+                if getattr(agent, 'kill_enemy_this_step', False):
                     rew += 120.0
 
         # 7. 多机协同机制

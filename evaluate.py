@@ -40,7 +40,7 @@ def evaluate_policy(args, env, agents, state_norm, seed=0, times=100):
                     # Reuse the training-time normalization statistics during evaluation.
                     obs = normalize_obs(args, s[agent_id], state_norm)
                     # 【核心修正】：使用 choose_action 并只取第一个返回值 (动作)
-                    a, _ = agents[agent_id].choose_action(obs)
+                    a = agents[agent_id].choose_action_deterministic(obs)
                     action = 2 * (a - 0.5) * args.max_action if args.policy_dist == "Beta" else a
                     actions.append(action)
 
@@ -81,7 +81,7 @@ def evaluate_combat_metrics(args, env, agents, state_norm, times=100):
                     actions.append(np.zeros(args.action_dim))
                 else:
                     obs = normalize_obs(args, s[agent_id], state_norm)
-                    a, _ = agents[agent_id].choose_action(obs)
+                    a = agents[agent_id].choose_action_deterministic(obs)
                     action = 2 * (a - 0.5) * args.max_action if args.policy_dist == "Beta" else a
                     actions.append(action)
                     episode_energy += np.linalg.norm(action) # 记录红方能量
@@ -152,7 +152,7 @@ def evaluate_robustness(args, env, agents, state_norm, noise_std, times=100):
                     actions.append(np.zeros(args.action_dim))
                 else:
                     obs = normalize_obs(args, noisy_s[agent_id], state_norm)
-                    a, _ = agents[agent_id].choose_action(obs)
+                    a = agents[agent_id].choose_action_deterministic(obs)
                     action = 2 * (a - 0.5) * args.max_action if args.policy_dist == "Beta" else a
                     actions.append(action)
 
@@ -209,7 +209,7 @@ def evaluate_failure_recovery(args, env, agents, state_norm):
                 s[agent_id] = np.zeros_like(s[agent_id])
             else:
                 obs = normalize_obs(args, s[agent_id], state_norm)
-                a, _ = agents[agent_id].choose_action(obs)
+                a = agents[agent_id].choose_action_deterministic(obs)
                 action = 2 * (a - 0.5) * args.max_action if args.policy_dist == "Beta" else a
                 actions.append(action)
 

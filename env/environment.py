@@ -13,7 +13,7 @@ class MultiAgentEnv(gym.Env):
 
     def __init__(self, world, reset_callback=None, reward_callback=None,
                  observation_callback=None,continuous_actions=False,done_callback=None,info_callback=None,
-                  shared_viewer=True):
+                  shared_viewer=True, combat_callback=None):
 
         self.world = world
         # 返回所有可以被训练的智能体对象
@@ -28,6 +28,7 @@ class MultiAgentEnv(gym.Env):
         self.observation_callback = observation_callback
         self.info_callback = info_callback
         self.done_callback = done_callback
+        self.combat_callback = combat_callback
         # environment parameters
         # 动作空间离散化
         self.continuous_actions = continuous_actions
@@ -100,9 +101,8 @@ class MultiAgentEnv(gym.Env):
         # advance world state
         # 同时执行world中的step
         self.world.step()
-        # Blue scripted opponents resolve combat through the scenario reward callback.
-        for agent in self.world.scripted_agents:
-            self._get_reward(agent)
+        if self.combat_callback is not None:
+            self.combat_callback(self.world)
         # record observation for each agent
         # 记录智能体的历史观测数据
         for agent in self.agents:
@@ -110,6 +110,8 @@ class MultiAgentEnv(gym.Env):
             reward_n.append(self._get_reward(agent))
             done_n.append(self._get_done(agent))
             info_n['n'].append(self._get_info(agent))
+            if hasattr(agent, 'last_action') and hasattr(agent.action, 'u'):
+                agent.last_action = np.copy(agent.action.u)
 
         # all agents get total reward in cooperative case
 

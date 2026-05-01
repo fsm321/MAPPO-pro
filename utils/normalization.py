@@ -5,21 +5,23 @@ class RunningMeanStd:
     # Dynamically calculate mean and std
     def __init__(self, shape):  # shape:the dimension of input data
         self.n = 0
-        self.mean = np.zeros(shape)
-        self.S = np.zeros(shape)
-        self.std = np.sqrt(self.S)
+        self.mean = np.zeros(shape, dtype=np.float64)
+        self.M2 = np.zeros(shape, dtype=np.float64)
+        self.std = np.ones(shape, dtype=np.float64)
 
     def update(self, x):
-        x = np.array(x)
+        x = np.asarray(x, dtype=np.float64)
         self.n += 1
-        if self.n == 1:
-            self.mean = x
-            self.std = x
+        delta = x - self.mean
+        self.mean = self.mean + delta / self.n
+        delta2 = x - self.mean
+        self.M2 = self.M2 + delta * delta2
+
+        if self.n > 1:
+            var = self.M2 / (self.n - 1)
+            self.std = np.sqrt(np.maximum(var, 1e-8))
         else:
-            old_mean = self.mean.copy()
-            self.mean = old_mean + (x - old_mean) / self.n
-            self.S = self.S + (x - old_mean) * (x - self.mean)
-            self.std = np.sqrt(self.S / self.n)
+            self.std = np.ones_like(self.mean)
 
 
 class Normalization:

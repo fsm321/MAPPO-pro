@@ -107,6 +107,20 @@ class MAPPO_Continuous:
             return a.cpu().numpy().flatten(), a_logprob.cpu().numpy().flatten()
         return a.cpu().numpy(), a_logprob.cpu().numpy()
 
+    def choose_action_deterministic(self, s):
+        s_tensor = torch.tensor(s, dtype=torch.float).to(self.device)
+        is_single = len(s_tensor.shape) == 1
+        if is_single:
+            s_tensor = s_tensor.unsqueeze(0)
+
+        with torch.no_grad():
+            a = self.actor(s_tensor)
+            a = torch.clamp(a, -self.max_action, self.max_action)
+
+        if is_single:
+            return a.cpu().numpy().flatten()
+        return a.cpu().numpy()
+
     def update(
             self,
             replay_buffer,
