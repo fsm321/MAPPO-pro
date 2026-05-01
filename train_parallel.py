@@ -135,6 +135,17 @@ def make_buffer_args(args, buffer_size):
     return new_args
 
 
+def build_task_onehot(task_id, task_dim):
+    task_onehot = np.zeros(task_dim)
+    task_onehot[int(np.clip(task_id, 0, task_dim - 1))] = 1.0
+    return task_onehot
+
+
+def build_shared_obs(red_obs, task_id, task_dim):
+    # Centralized critic input = concatenated red observations + task one-hot.
+    return np.concatenate((np.asarray(red_obs).reshape(-1), build_task_onehot(task_id, task_dim)), axis=0)
+
+
 def init_meta_task_ids(args, total_steps):
     """
     前半环境作为 support，后半环境作为 query。
@@ -175,6 +186,10 @@ def main(args, seed):
     print(f"==> 正在启动 {args.num_envs} 个并行环境...")
     envs = SubprocMPEVecEnv(args.num_envs, MPEEnv, args)
     args.state_dim, args.action_dim, args.max_action = envs.observation_space[0].shape[0], envs.action_space[0].shape[0], float(envs.action_space[0].high[0])
+    red_ids = [0, 1]
+    args.n_red = len(red_ids)
+    args.task_dim = getattr(args, "task_dim", 3)
+    args.share_state_dim = args.state_dim * args.n_red + args.task_dim
 
     log_dir = f"{args.save_dir}/{args.date}/logs/{args.algo_name}_parallel_seed{seed}"
     if not os.path.exists(log_dir): os.makedirs(log_dir)
@@ -210,7 +225,6 @@ def main(args, seed):
         env_task_ids = np.array([select_train_task(args, total_steps) for _ in range(args.num_envs)])
     s = envs.reset(env_task_ids)
     episode_steps = np.zeros(args.num_envs, dtype=int)
-    red_ids = [0, 1]
 
     # 防止 save/eval 在同一里程碑被重复触发
     last_save_index = -1
@@ -347,6 +361,16 @@ def main(args, seed):
                     if (np.all(done[env_idx]) and "terminal_observation" in infos[env_idx])
                     else s_next[env_idx]
                 )
+                task_id = int(env_task_ids[env_idx])
+                if args.use_state_norm:
+                    s_next_normed_red = np.zeros((len(red_ids), args.state_dim))
+                    for next_j, next_rid in enumerate(red_ids):
+                        s_next_normed_red[next_j] = state_norm(real_s_next[next_rid], update=False)
+                else:
+                    s_next_normed_red = np.array([real_s_next[next_rid] for next_rid in red_ids])
+
+                share_obs = build_shared_obs(s_normed[env_idx], task_id, args.task_dim)
+                share_obs_next = build_shared_obs(s_next_normed_red, task_id, args.task_dim)
 
                 for j, rid in enumerate(red_ids):
                     # dw 表示真实终止：死亡/全歼导致结束时不 bootstrap
@@ -354,11 +378,6 @@ def main(args, seed):
 
                     # done_for_gae 表示 GAE 是否断开：时间截断也要断开
                     done_for_gae = done[env_idx][rid] or (episode_steps[env_idx] >= args.max_episode_steps)
-
-                    if args.use_state_norm:
-                        s_next_normed = state_norm(real_s_next[rid], update=False)
-                    else:
-                        s_next_normed = real_s_next[rid]
 
                     if args.algo_name == "Meta-MAPPO":
                         if env_idx < args.meta_support_envs:
@@ -370,10 +389,12 @@ def main(args, seed):
 
                     target_buffer.store(
                         s_normed[env_idx][j],
+                        share_obs,
                         a_batch[env_idx][j],
                         a_logp_batch[env_idx][j],
                         scaled_red_rewards[env_idx][j],
-                        s_next_normed,
+                        s_next_normed_red[j],
+                        share_obs_next,
                         dw,
                         done_for_gae
                     )

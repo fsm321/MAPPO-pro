@@ -43,7 +43,7 @@ class Actor_Gaussian(nn.Module):
 class Critic(nn.Module):
     def __init__(self, args):
         super(Critic, self).__init__()
-        self.fc1 = nn.Linear(args.state_dim, args.hidden_width)
+        self.fc1 = nn.Linear(args.share_state_dim, args.hidden_width)
         self.fc2 = nn.Linear(args.hidden_width, args.hidden_width)
         self.v_layer = nn.Linear(args.hidden_width, 1)
         self.activate_func = [nn.ReLU(), nn.Tanh()][args.use_tanh]
@@ -53,10 +53,10 @@ class Critic(nn.Module):
             orthogonal_init(self.fc2)
             orthogonal_init(self.v_layer, gain=1.0)
 
-    def forward(self, s):
-        s = self.activate_func(self.fc1(s))
-        s = self.activate_func(self.fc2(s))
-        v_s = self.v_layer(s)
+    def forward(self, share_s):
+        share_s = self.activate_func(self.fc1(share_s))
+        share_s = self.activate_func(self.fc2(share_s))
+        v_s = self.v_layer(share_s)
         return v_s
 
 
@@ -115,12 +115,14 @@ class MAPPO_Continuous:
             rollout_group_size=None,
             K_epochs_override=None
     ):
-        s, a, a_logprob, r, s_next, dw, done = replay_buffer.numpy_to_tensor()
+        s, share_s, a, a_logprob, r, s_next, share_s_next, dw, done = replay_buffer.numpy_to_tensor()
         s = s.to(self.device)
+        share_s = share_s.to(self.device)
         a = a.to(self.device)
         a_logprob = a_logprob.to(self.device)
         r = r.to(self.device)
         s_next = s_next.to(self.device)
+        share_s_next = share_s_next.to(self.device)
         dw = dw.to(self.device)
         done = done.to(self.device)
         old_group_size = self.rollout_group_size
@@ -128,7 +130,7 @@ class MAPPO_Continuous:
         old_group_size = self.rollout_group_size
         if rollout_group_size is not None:
             self.rollout_group_size = rollout_group_size
-        adv, v_target = self.get_adv(s, r, s_next, dw, done)
+        adv, v_target = self.get_adv(share_s, r, share_s_next, dw, done)
         self.rollout_group_size = old_group_size
         # Prioritized sampling: emphasize samples with larger absolute advantages.
         adv_abs = torch.abs(adv).squeeze(-1)
@@ -166,7 +168,7 @@ class MAPPO_Continuous:
                 if self.use_grad_clip: nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)
                 self.optimizer_actor.step()
 
-                v_s = self.critic(s[index])
+                v_s = self.critic(share_s[index])
                 #c_loss = F.mse_loss(v_target[index], v_s)
                 c_loss = F.smooth_l1_loss(v_target[index], v_s)
                 self.optimizer_critic.zero_grad()
@@ -183,10 +185,10 @@ class MAPPO_Continuous:
         return a_loss_sum / denom, c_loss_sum / denom
 
     #按智能体/环境分别计算 GAE，避免 red0、red1 以及不同并行环境之间串轨迹。
-    def get_adv(self, s, r, s_next, dw, done):
+    def get_adv(self, share_s, r, share_s_next, dw, done):
         with torch.no_grad():
-            v_s = self.critic(s)
-            v_s_next = self.critic(s_next)
+            v_s = self.critic(share_s)
+            v_s_next = self.critic(share_s_next)
             # 【修正】：使用 1.0 - dw，避免 float tensor 按位取反报错
             deltas = r + self.gamma * v_s_next * (1.0 - dw) - v_s
             group_size = self.rollout_group_size

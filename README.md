@@ -11,10 +11,9 @@ git push
 ## 训练
 ```bash
 D:
-cd D:\Meta-MAPPO\Meta-MAPPO\7.2
-python train_parallel.py --algo_name MAPPO --num_envs 8
-```
+cd D:\Meta-MAPPO\Meta-MAPPO\9.0
 python run_experiments.py
+```
 
 ## 训练结果
 
@@ -22,7 +21,7 @@ python run_experiments.py
 ### 1.奖励曲线，胜率
 ```bash
 D:
-cd D:\Meta-MAPPO\Meta-MAPPO\7.2
+cd D:\Meta-MAPPO\Meta-MAPPO\9.0
 tensorboard --logdir=./data
 ```
 在plot_TensorBoard文件中改数据地址

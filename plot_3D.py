@@ -497,6 +497,9 @@ if __name__ == '__main__':
     args.state_dim = env.observation_space[0].shape[0]
     args.action_dim = env.action_space[0].shape[0]
     args.max_action = float(env.action_space[0].high[0])
+    args.n_red = getattr(args, "n_red", 2)
+    args.task_dim = getattr(args, "task_dim", 3)
+    args.share_state_dim = args.state_dim * args.n_red + args.task_dim
 
     if args.algo_name == "Meta-MAPPO":
         shared_agent = Meta_MAPPO_Continuous(args)
