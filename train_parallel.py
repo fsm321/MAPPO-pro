@@ -141,9 +141,19 @@ def build_task_onehot(task_id, task_dim):
     return task_onehot
 
 
-def build_shared_obs(red_obs, task_id, task_dim):
-    # Centralized critic input = concatenated red observations + task one-hot.
-    return np.concatenate((np.asarray(red_obs).reshape(-1), build_task_onehot(task_id, task_dim)), axis=0)
+def build_agent_onehot(agent_idx, n_red):
+    agent_onehot = np.zeros(n_red)
+    agent_onehot[agent_idx] = 1.0
+    return agent_onehot
+
+
+def build_shared_obs(red_obs, task_id, task_dim, agent_idx, n_red):
+    # Centralized critic input = red joint observations + task one-hot + agent one-hot.
+    base = np.concatenate(
+        (np.asarray(red_obs).reshape(-1), build_task_onehot(task_id, task_dim)),
+        axis=0
+    )
+    return np.concatenate((base, build_agent_onehot(agent_idx, n_red)), axis=0)
 
 
 def init_meta_task_ids(args, total_steps):
@@ -189,7 +199,7 @@ def main(args, seed):
     red_ids = [0, 1]
     args.n_red = len(red_ids)
     args.task_dim = getattr(args, "task_dim", 3)
-    args.share_state_dim = args.state_dim * args.n_red + args.task_dim
+    args.share_state_dim = args.state_dim * args.n_red + args.task_dim + args.n_red
 
     log_dir = f"{args.save_dir}/{args.date}/logs/{args.algo_name}_parallel_seed{seed}"
     if not os.path.exists(log_dir): os.makedirs(log_dir)
@@ -369,15 +379,26 @@ def main(args, seed):
                 else:
                     s_next_normed_red = np.array([real_s_next[next_rid] for next_rid in red_ids])
 
-                share_obs = build_shared_obs(s_normed[env_idx], task_id, args.task_dim)
-                share_obs_next = build_shared_obs(s_next_normed_red, task_id, args.task_dim)
-
                 for j, rid in enumerate(red_ids):
                     # dw 表示真实终止：死亡/全歼导致结束时不 bootstrap
                     dw = True if done[env_idx][rid] and episode_steps[env_idx] != args.max_episode_steps else False
 
                     # done_for_gae 表示 GAE 是否断开：时间截断也要断开
                     done_for_gae = done[env_idx][rid] or (episode_steps[env_idx] >= args.max_episode_steps)
+                    share_obs = build_shared_obs(
+                        s_normed[env_idx],
+                        task_id,
+                        args.task_dim,
+                        agent_idx=j,
+                        n_red=args.n_red
+                    )
+                    share_obs_next = build_shared_obs(
+                        s_next_normed_red,
+                        task_id,
+                        args.task_dim,
+                        agent_idx=j,
+                        n_red=args.n_red
+                    )
 
                     if args.algo_name == "Meta-MAPPO":
                         if env_idx < args.meta_support_envs:

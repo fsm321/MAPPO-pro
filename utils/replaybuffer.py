@@ -29,14 +29,15 @@ class ReplayBuffer:
         self.count += 1
 
     def numpy_to_tensor(self):
-        s = torch.tensor(self.s, dtype=torch.float)
-        share_s = torch.tensor(self.share_s, dtype=torch.float)
-        a = torch.tensor(self.a, dtype=torch.float)
-        a_logprob = torch.tensor(self.a_logprob, dtype=torch.float)
-        r = torch.tensor(self.r, dtype=torch.float)
-        s_ = torch.tensor(self.s_, dtype=torch.float)
-        share_s_ = torch.tensor(self.share_s_, dtype=torch.float)
-        dw = torch.tensor(self.dw, dtype=torch.float)
-        done = torch.tensor(self.done, dtype=torch.float)
+        n = self.count
+        s = torch.tensor(self.s[:n], dtype=torch.float)
+        share_s = torch.tensor(self.share_s[:n], dtype=torch.float)
+        a = torch.tensor(self.a[:n], dtype=torch.float)
+        a_logprob = torch.tensor(self.a_logprob[:n], dtype=torch.float)
+        r = torch.tensor(self.r[:n], dtype=torch.float)
+        s_ = torch.tensor(self.s_[:n], dtype=torch.float)
+        share_s_ = torch.tensor(self.share_s_[:n], dtype=torch.float)
+        dw = torch.tensor(self.dw[:n], dtype=torch.float)
+        done = torch.tensor(self.done[:n], dtype=torch.float)
 
         return s, share_s, a, a_logprob, r, s_, share_s_, dw, done
