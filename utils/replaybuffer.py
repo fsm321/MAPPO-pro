@@ -14,9 +14,10 @@ class ReplayBuffer:
         self.share_s_ = np.zeros((args.buffer_size, args.share_state_dim))
         self.dw = np.zeros((args.buffer_size, 1))
         self.done = np.zeros((args.buffer_size, 1))
+        self.active_mask = np.ones((args.buffer_size, 1))
         self.count = 0
 
-    def store(self, s, share_s, a, a_logprob, r, s_, share_s_, dw, done):
+    def store(self, s, share_s, a, a_logprob, r, s_, share_s_, dw, done, active_mask=1.0):
         self.s[self.count] = s
         self.share_s[self.count] = share_s
         self.a[self.count] = a
@@ -26,6 +27,7 @@ class ReplayBuffer:
         self.share_s_[self.count] = share_s_
         self.dw[self.count] = dw
         self.done[self.count] = done
+        self.active_mask[self.count] = active_mask
         self.count += 1
 
     def numpy_to_tensor(self):
@@ -39,5 +41,6 @@ class ReplayBuffer:
         share_s_ = torch.tensor(self.share_s_[:n], dtype=torch.float)
         dw = torch.tensor(self.dw[:n], dtype=torch.float)
         done = torch.tensor(self.done[:n], dtype=torch.float)
+        active_mask = torch.tensor(self.active_mask[:n], dtype=torch.float)
 
-        return s, share_s, a, a_logprob, r, s_, share_s_, dw, done
+        return s, share_s, a, a_logprob, r, s_, share_s_, dw, done, active_mask

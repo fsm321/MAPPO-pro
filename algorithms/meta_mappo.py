@@ -9,10 +9,8 @@ class Meta_MAPPO_Continuous(MAPPO_Continuous):
         self.initial_entropy = args.entropy_coef
 
     def get_weights(self):
-        # ==========================================
-        # 【核心修正】：移除 .cpu()，直接在显存中 detach 和 clone！
-        # 避免每次 meta_update 都在 GPU 和 CPU 之间来回搬运几十MB的参数，极大提升速度
-        # ==========================================
+        # Clone actor/critic weights on the current device.
+        # This avoids repeated CPU-GPU copies during each meta step.
         actor_weights = {k: v.detach().clone() for k, v in self.actor.state_dict().items()}
         critic_weights = {k: v.detach().clone() for k, v in self.critic.state_dict().items()}
         return actor_weights, critic_weights
@@ -20,12 +18,13 @@ class Meta_MAPPO_Continuous(MAPPO_Continuous):
     def meta_update(self, old_weights, meta_lr):
         old_actor, old_critic = old_weights
         with torch.no_grad():
-            # Actor 一阶元更新 (基于 Reptile 的一阶 MAML 思想)
+            # Reptile-style first-order meta update for the actor.
+            # Move the initialization toward the post-adaptation parameters.
             for name, param in self.actor.named_parameters():
                 if name in old_actor:
                     param.data = old_actor[name] + meta_lr * (param.data - old_actor[name])
 
-            # Critic 一阶元更新
+            # Apply the same first-order interpolation to the centralized critic.
             for name, param in self.critic.named_parameters():
                 if name in old_critic:
                     param.data = old_critic[name] + meta_lr * (param.data - old_critic[name])
@@ -42,15 +41,15 @@ class Meta_MAPPO_Continuous(MAPPO_Continuous):
             outer_epochs=1
     ):
         """
-        Support/Query 一阶元更新：
-        1. 保存旧参数
-        2. support buffer 上做内层适应
-        3. query buffer 上做外层验证更新
-        4. 旧参数向 query 更新后的参数移动
+        Reptile-style support/query meta step:
+        1. Save the pre-adaptation parameters.
+        2. Adapt on the support buffer with PPO updates.
+        3. Continue updating on the query buffer.
+        4. Move the saved initialization toward the post-query parameters.
         """
         old_weights = self.get_weights()
 
-        # 先在 support 轨迹上做快速适应，再在 query 轨迹上检验适应后的策略。
+        # Support updates play the role of task-specific adaptation.
         support_actor_loss, support_critic_loss = self.update(
             support_buffer,
             total_steps,
@@ -69,7 +68,7 @@ class Meta_MAPPO_Continuous(MAPPO_Continuous):
 
         self.meta_update(old_weights, meta_lr)
 
-        # 整个 meta step 只衰减一次学习率，避免 support/query 双重衰减。
+        # Decay learning rates once per meta step, not once per support/query sub-update.
         if self.use_lr_decay:
             self.lr_decay(total_steps)
 
@@ -81,7 +80,7 @@ class Meta_MAPPO_Continuous(MAPPO_Continuous):
         )
 
     def lr_decay(self, total_steps):
-        # 学习率与探索率（熵）的线性衰减
+        # Linearly decay actor/critic learning rates and the entropy coefficient.
         progress = max(0.0, 1 - total_steps / self.max_train_steps)
         lr_a_now, lr_c_now = self.lr_a * progress, self.lr_c * progress
 
@@ -90,5 +89,5 @@ class Meta_MAPPO_Continuous(MAPPO_Continuous):
         for p in self.optimizer_critic.param_groups:
             p['lr'] = lr_c_now
 
-        # 保证最小有 0.001 的探索底线，防止策略过早固化
+        # Keep a small entropy floor so exploration does not collapse too early.
         self.entropy_coef = max(0.001, self.initial_entropy * progress)

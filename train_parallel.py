@@ -430,8 +430,10 @@ def main(args, seed):
                         dw = True
                         done_for_gae = True
                         scaled_reward = 0.0
+                        active_mask = 0.0
                     else:
                         scaled_reward = scaled_red_rewards[env_idx][j]
+                        active_mask = 1.0
 
                     if args.algo_name == "Meta-MAPPO":
                         if env_idx < args.meta_support_envs:
@@ -450,7 +452,8 @@ def main(args, seed):
                         s_next_normed_red[j],
                         share_obs_next,
                         dw,
-                        done_for_gae
+                        done_for_gae,
+                        active_mask
                     )
 
                     if done[env_idx][rid] and not np.all(done[env_idx]) and episode_steps[env_idx] < args.max_episode_steps:
@@ -532,6 +535,19 @@ def main(args, seed):
         envs.close()
         writer.close()
 
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+
+    if v.lower() in ("yes", "true", "t", "1", "y"):
+        return True
+
+    if v.lower() in ("no", "false", "f", "0", "n"):
+        return False
+
+    raise argparse.ArgumentTypeError("Boolean value expected.")
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario_name", type=str, default="air_combat_2v2")
@@ -554,7 +570,7 @@ if __name__ == '__main__':
 
     parser.add_argument("--save_dir", type=str, default="./data")
     parser.add_argument("--model_dir", type=str, default="")
-    parser.add_argument("--restore", type=bool, default=False)
+    parser.add_argument("--restore", type=str2bool, default=False)
 
     parser.add_argument("--policy_dist", type=str, default="Gaussian")
     parser.add_argument("--hidden_width", type=int, default=256)
@@ -571,15 +587,15 @@ if __name__ == '__main__':
     parser.add_argument("--epsilon", type=float, default=0.15)
     parser.add_argument("--entropy_coef", type=float, default=0.03)
 
-    parser.add_argument("--use_adv_norm", type=bool, default=True)
-    parser.add_argument("--use_state_norm", type=bool, default=True)
-    parser.add_argument("--use_reward_norm", type=bool, default=True)
-    parser.add_argument("--use_reward_scaling", type=bool, default=True)
-    parser.add_argument("--use_lr_decay", type=bool, default=True)
-    parser.add_argument("--use_grad_clip", type=bool, default=True)
-    parser.add_argument("--use_orthogonal_init", type=bool, default=True)
-    parser.add_argument("--set_adam_eps", type=bool, default=True)
-    parser.add_argument("--use_tanh", type=bool, default=True)
+    parser.add_argument("--use_adv_norm", type=str2bool, default=True)
+    parser.add_argument("--use_state_norm", type=str2bool, default=True)
+    parser.add_argument("--use_reward_norm", type=str2bool, default=True)
+    parser.add_argument("--use_reward_scaling", type=str2bool, default=True)
+    parser.add_argument("--use_lr_decay", type=str2bool, default=True)
+    parser.add_argument("--use_grad_clip", type=str2bool, default=True)
+    parser.add_argument("--use_orthogonal_init", type=str2bool, default=True)
+    parser.add_argument("--set_adam_eps", type=str2bool, default=True)
+    parser.add_argument("--use_tanh", type=str2bool, default=True)
 
     args = parser.parse_args()
     if args.fixed_task != -1 and args.fixed_task not in META_TRAIN_TASK_IDS:

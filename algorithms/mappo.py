@@ -30,7 +30,9 @@ class Actor_Gaussian(nn.Module):
     def forward(self, s):
         s = self.activate_func(self.fc1(s))
         s = self.activate_func(self.fc2(s))
-        mean = self.max_action * torch.tanh(self.mean_layer(s))
+        # Output the pre-squash Gaussian mean. The final action squashing is
+        # handled outside the actor so log-prob correction can be computed.
+        mean = self.mean_layer(s)
         return mean
 
     def get_dist(self, s):
@@ -71,7 +73,7 @@ class MAPPO_Continuous:
         self.num_envs = getattr(args, "num_envs", 1)
         self.rollout_group_size = self.n_red * self.num_envs
         self.max_train_steps = args.max_train_steps
-        self.max_episode_steps = args.max_episode_steps  # 保存所需
+        self.max_episode_steps = args.max_episode_steps  # Used by checkpoint naming and rollout truncation logic.
         self.lr_a = args.lr_a
         self.lr_c = args.lr_c
         self.gamma = args.gamma
@@ -87,21 +89,27 @@ class MAPPO_Continuous:
 
         self.actor = Actor_Gaussian(args).to(self.device)
         self.critic = Critic(args).to(self.device)
-        self.optimizer_actor = torch.optim.Adam(self.actor.parameters(), lr=self.lr_a,
-                                                eps=1e-5 if self.set_adam_eps else 1e-8)
-        self.optimizer_critic = torch.optim.Adam(self.critic.parameters(), lr=self.lr_c,
-                                                 eps=1e-5 if self.set_adam_eps else 1e-8)
+        self.optimizer_actor = torch.optim.Adam(
+            self.actor.parameters(),
+            lr=self.lr_a,
+            eps=1e-5 if self.set_adam_eps else 1e-8
+        )
+        self.optimizer_critic = torch.optim.Adam(
+            self.critic.parameters(),
+            lr=self.lr_c,
+            eps=1e-5 if self.set_adam_eps else 1e-8
+        )
 
     def choose_action(self, s):
         s_tensor = torch.tensor(s, dtype=torch.float).to(self.device)
         is_single = len(s_tensor.shape) == 1
-        if is_single: s_tensor = s_tensor.unsqueeze(0)
+        if is_single:
+            s_tensor = s_tensor.unsqueeze(0)
 
         with torch.no_grad():
             dist = self.actor.get_dist(s_tensor)
-            a = dist.sample()
-            a = torch.clamp(a, -self.max_action, self.max_action)
-            a_logprob = dist.log_prob(a).sum(dim=-1, keepdim=True)
+            raw_action = dist.rsample()
+            a, a_logprob = self._squash_action_and_logprob(dist, raw_action)
 
         if is_single:
             return a.cpu().numpy().flatten(), a_logprob.cpu().numpy().flatten()
@@ -114,12 +122,24 @@ class MAPPO_Continuous:
             s_tensor = s_tensor.unsqueeze(0)
 
         with torch.no_grad():
-            a = self.actor(s_tensor)
-            a = torch.clamp(a, -self.max_action, self.max_action)
+            raw_mean = self.actor(s_tensor)
+            a = self.max_action * torch.tanh(raw_mean)
 
         if is_single:
             return a.cpu().numpy().flatten()
         return a.cpu().numpy()
+
+    def _squash_action_and_logprob(self, dist, raw_action):
+        tanh_action = torch.tanh(raw_action)
+        action = self.max_action * tanh_action
+        log_prob = dist.log_prob(raw_action)
+        log_prob -= torch.log(self.max_action * (1 - tanh_action.pow(2)) + 1e-6)
+        log_prob = log_prob.sum(dim=-1, keepdim=True)
+        return action, log_prob
+
+    def _inverse_squash_action(self, action):
+        action_scaled = torch.clamp(action / self.max_action, -0.999999, 0.999999)
+        return 0.5 * torch.log((1 + action_scaled) / (1 - action_scaled))
 
     def update(
             self,
@@ -129,7 +149,7 @@ class MAPPO_Continuous:
             rollout_group_size=None,
             K_epochs_override=None
     ):
-        s, share_s, a, a_logprob, r, s_next, share_s_next, dw, done = replay_buffer.numpy_to_tensor()
+        s, share_s, a, a_logprob, r, s_next, share_s_next, dw, done, active_mask = replay_buffer.numpy_to_tensor()
         s = s.to(self.device)
         share_s = share_s.to(self.device)
         a = a.to(self.device)
@@ -139,30 +159,41 @@ class MAPPO_Continuous:
         share_s_next = share_s_next.to(self.device)
         dw = dw.to(self.device)
         done = done.to(self.device)
+        active_mask = active_mask.to(self.device)
         old_group_size = self.rollout_group_size
-        # Meta-MAPPO support/query 会拆分并行环境，因此这里允许临时覆盖 GAE 的 rollout 分组大小。
+        # Meta-MAPPO splits rollouts into support/query buffers, so GAE grouping
+        # may need a temporary rollout size override during each update call.
         old_group_size = self.rollout_group_size
         if rollout_group_size is not None:
             self.rollout_group_size = rollout_group_size
-        adv, v_target = self.get_adv(share_s, r, share_s_next, dw, done)
+        adv, v_target = self.get_adv(share_s, r, share_s_next, dw, done, active_mask)
         self.rollout_group_size = old_group_size
-        # Prioritized sampling: emphasize samples with larger absolute advantages.
-        adv_abs = torch.abs(adv).squeeze(-1)
+        valid_mask = active_mask.squeeze(-1) > 0.5
+        valid_count = int(valid_mask.sum().item())
 
-        if torch.isnan(adv_abs).any() or adv_abs.sum() <= 1e-8:
-            sample_prob = torch.ones_like(adv_abs) / len(adv_abs)
+        if valid_count <= 0:
+            return 0.0, 0.0
+
+        # Prioritized sampling only draws valid transitions.
+        adv_abs = torch.abs(adv).squeeze(-1)
+        adv_abs = adv_abs * active_mask.squeeze(-1)
+        sample_prob = torch.zeros_like(adv_abs)
+
+        if bool(torch.isnan(adv_abs).any().item()) or adv_abs.sum().item() <= 1e-8:
+            sample_prob[valid_mask] = 1.0 / valid_count
         else:
-            priority_prob = adv_abs + 1e-6
+            priority_prob = adv_abs[valid_mask] + 1e-6
             priority_prob = priority_prob / priority_prob.sum()
 
-            uniform_prob = torch.ones_like(priority_prob) / len(priority_prob)
-            sample_prob = 0.7 * priority_prob + 0.3 * uniform_prob
+            uniform_prob = torch.ones_like(priority_prob) / valid_count
+            mixed_prob = 0.7 * priority_prob + 0.3 * uniform_prob
+            sample_prob[valid_mask] = mixed_prob
 
         a_loss_sum, c_loss_sum = 0, 0
         K_epochs = self.K_epochs if K_epochs_override is None else K_epochs_override
         buffer_size = s.shape[0]
-        mini_batch_size = min(self.mini_batch_size, buffer_size)
-        effective_batch_size = min(self.batch_size, buffer_size)
+        mini_batch_size = min(self.mini_batch_size, valid_count)
+        effective_batch_size = min(self.batch_size, valid_count)
         batch_count = max(1, effective_batch_size // mini_batch_size)
 
         for _ in range(K_epochs):
@@ -170,24 +201,29 @@ class MAPPO_Continuous:
                 index = torch.multinomial(sample_prob, mini_batch_size, replacement=False)
                 dist_now = self.actor.get_dist(s[index])
                 dist_entropy = dist_now.entropy().sum(dim=-1, keepdim=True)
-                a_logprob_now = dist_now.log_prob(a[index]).sum(dim=-1, keepdim=True)
+                raw_action = self._inverse_squash_action(a[index])
+                _, a_logprob_now = self._squash_action_and_logprob(dist_now, raw_action)
                 ratio = torch.exp(a_logprob_now - a_logprob[index])
 
                 surr1 = ratio * adv[index]
                 surr2 = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon) * adv[index]
-                a_loss = -torch.min(surr1, surr2) - self.entropy_coef * dist_entropy
+                a_loss_each = -torch.min(surr1, surr2) - self.entropy_coef * dist_entropy
+                mb_active = active_mask[index]
+                a_loss = (a_loss_each * mb_active).sum() / (mb_active.sum() + 1e-8)
 
                 self.optimizer_actor.zero_grad()
-                a_loss.mean().backward()
-                if self.use_grad_clip: nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)
+                a_loss.backward()
+                if self.use_grad_clip:
+                    nn.utils.clip_grad_norm_(self.actor.parameters(), 0.5)
                 self.optimizer_actor.step()
 
                 v_s = self.critic(share_s[index])
-                #c_loss = F.mse_loss(v_target[index], v_s)
-                c_loss = F.smooth_l1_loss(v_target[index], v_s)
+                c_loss_each = F.smooth_l1_loss(v_s, v_target[index], reduction='none')
+                c_loss = (c_loss_each * mb_active).sum() / (mb_active.sum() + 1e-8)
                 self.optimizer_critic.zero_grad()
                 c_loss.backward()
-                if self.use_grad_clip: nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
+                if self.use_grad_clip:
+                    nn.utils.clip_grad_norm_(self.critic.parameters(), 0.5)
                 self.optimizer_critic.step()
 
                 a_loss_sum += a_loss.mean().item()
@@ -198,18 +234,19 @@ class MAPPO_Continuous:
         denom = K_epochs * batch_count
         return a_loss_sum / denom, c_loss_sum / denom
 
-    #按智能体/环境分别计算 GAE，避免 red0、red1 以及不同并行环境之间串轨迹。
-    def get_adv(self, share_s, r, share_s_next, dw, done):
+    # Compute GAE per rollout slot so trajectories from different agents or
+    # parallel environments are not mixed together.
+    def get_adv(self, share_s, r, share_s_next, dw, done, active_mask=None):
         with torch.no_grad():
             v_s = self.critic(share_s)
             v_s_next = self.critic(share_s_next)
-            # 【修正】：使用 1.0 - dw，避免 float tensor 按位取反报错
+            # dw marks true terminals, so bootstrap only when dw == 0.
             deltas = r + self.gamma * v_s_next * (1.0 - dw) - v_s
             group_size = self.rollout_group_size
             total_size = deltas.shape[0]
 
-            # 如果长度不能整除 group_size，退回旧写法，避免直接报错
-            # 正常情况下，train.py 和 train_parallel.py 应该都能整除
+            # If the buffer cannot be reshaped into aligned rollout groups,
+            # fall back to the flat reverse scan instead of crashing.
             if total_size % group_size != 0:
                 adv = torch.zeros_like(deltas).to(self.device)
                 gae = torch.zeros(1, 1, device=self.device)
@@ -220,7 +257,20 @@ class MAPPO_Continuous:
 
                 v_target = adv + v_s
                 if self.use_adv_norm:
-                    adv = (adv - adv.mean()) / (adv.std() + 1e-5)
+                    if active_mask is not None:
+                        valid = active_mask > 0.5
+                        if valid.sum().item() > 1:
+                            adv_mean = adv[valid].mean()
+                            adv_std = adv[valid].std(unbiased=False)
+                            adv = torch.where(
+                                valid,
+                                (adv - adv_mean) / (adv_std + 1e-5),
+                                torch.zeros_like(adv)
+                            )
+                        else:
+                            adv = torch.zeros_like(adv)
+                    else:
+                        adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-5)
 
                 return adv, v_target
 
@@ -232,34 +282,51 @@ class MAPPO_Continuous:
 
             adv = torch.zeros_like(deltas).to(self.device)
 
-            # 每个 env-agent 单独维护一个 gae
+            # Keep one GAE accumulator per rollout slot.
             gae = torch.zeros(group_size, 1, device=self.device)
 
             for t in reversed(range(T)):
                 gae = deltas[t] + self.gamma * self.lamda * gae * (1.0 - done[t])
                 adv[t] = gae
 
-            # 展平成 [batch_size, 1]
+            # Flatten back to [batch_size, 1].
             adv = adv.view(-1, 1)
             v_target = adv + v_s
 
-            if self.use_adv_norm: adv = ((adv - adv.mean()) / (adv.std() + 1e-5))
+            if self.use_adv_norm:
+                if active_mask is not None:
+                    valid = active_mask > 0.5
+                    if valid.sum().item() > 1:
+                        adv_mean = adv[valid].mean()
+                        adv_std = adv[valid].std(unbiased=False)
+                        adv = torch.where(
+                            valid,
+                            (adv - adv_mean) / (adv_std + 1e-5),
+                            torch.zeros_like(adv)
+                        )
+                    else:
+                        adv = torch.zeros_like(adv)
+                else:
+                    adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-5)
         return adv, v_target
 
     def lr_decay(self, total_steps):
         progress = max(0.0, 1 - total_steps / self.max_train_steps)
         lr_a_now, lr_c_now = self.lr_a * progress, self.lr_c * progress
-        for p in self.optimizer_actor.param_groups: p['lr'] = lr_a_now
-        for p in self.optimizer_critic.param_groups: p['lr'] = lr_c_now
+        for p in self.optimizer_actor.param_groups:
+            p['lr'] = lr_a_now
+        for p in self.optimizer_critic.param_groups:
+            p['lr'] = lr_c_now
 
     def save(self, agent_id, total_num_steps):
-        # 【修正】：动态使用 self.max_episode_steps
+        # Use self.max_episode_steps so save indices stay aligned with the current training setup.
         path = f"{self.save_dir}/{self.date}/model/{int(total_num_steps // self.max_episode_steps)}"
-        if not os.path.exists(path): os.makedirs(path)
+        if not os.path.exists(path):
+            os.makedirs(path)
         torch.save(self.actor.state_dict(), f"{path}/actor_shared.pt")
         torch.save(self.critic.state_dict(), f"{path}/critic_shared.pt")
 
     def restore(self, agent_id):
-        # 【修正】：加入 map_location 以保证跨设备兼容性
+        # Load checkpoints onto the current device for cross-device compatibility.
         self.actor.load_state_dict(torch.load(f"{self.model_dir}/actor_shared.pt", map_location=self.device))
         self.critic.load_state_dict(torch.load(f"{self.model_dir}/critic_shared.pt", map_location=self.device))

@@ -50,6 +50,13 @@ robustness_data_MAPPO.npy
 robustness_data_Meta-MAPPO.npy
 recovery_data_MAPPO.npy
 recovery_data_Meta-MAPPO.npy
+3. 批量运行 Meta-test 快速适应评估
+```bash
+D:
+cd D:\Meta-MAPPO\Meta-MAPPO\9.0
+python run_fast_adaptation.py
+```
+运行前请先在 `run_fast_adaptation.py` 中配置好 `MODEL_DIRS`，让它指向实际的 checkpoint 目录。
 2. 再运行绘图
 ```bash
 D:
