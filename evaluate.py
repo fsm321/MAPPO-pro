@@ -20,10 +20,10 @@ def normalize_obs(args, obs, state_norm):
 # ==========================================
 # 1. 基础性能评估
 # ==========================================
-def evaluate_policy(args, env, agents, state_norm, seed=0, times=100):
+def evaluate_policy(args, env, agents, state_norm, seed=0, times=100, task_id=None):
     evaluate_rewards = []
     for i in range(times):
-        s = env.reset()
+        s = env.reset(task_id=task_id) if task_id is not None else env.reset()
         episode_steps = 0
         episode_reward = 0
         dones = np.zeros(env.n)
@@ -58,7 +58,7 @@ def evaluate_policy(args, env, agents, state_norm, seed=0, times=100):
 # ==========================================
 # 2. 论文核心图表 1：高阶空战效能评估 (纯净战损比、耗时、能量)
 # ==========================================
-def evaluate_combat_metrics(args, env, agents, state_norm, times=100):
+def evaluate_combat_metrics(args, env, agents, state_norm, times=100, task_id=None):
     total_wins = 0
     total_red_combat_deaths = 0  # 我方【真实被击杀】数
     total_blue_deaths = 0  # 击落敌机数
@@ -66,7 +66,7 @@ def evaluate_combat_metrics(args, env, agents, state_norm, times=100):
     total_energy_consumed = []  # 能量消耗
 
     for i in range(times):
-        s = env.reset()
+        s = env.reset(task_id=task_id) if task_id is not None else env.reset()
         episode_steps = 0
         dones = np.zeros(env.n)
         episode_energy = 0.0
@@ -123,7 +123,7 @@ def evaluate_combat_metrics(args, env, agents, state_norm, times=100):
 # ==========================================
 # 3. 论文核心图表 2：抗干扰能力 (鲁棒性) 测试
 # ==========================================
-def evaluate_robustness(args, env, agents, state_norm, noise_std, times=100):
+def evaluate_robustness(args, env, agents, state_norm, noise_std, times=100, task_id=None):
     """
     观测噪声鲁棒性测试：
     在观测状态中加入高斯噪声 N(0, noise_std)，
@@ -133,7 +133,7 @@ def evaluate_robustness(args, env, agents, state_norm, noise_std, times=100):
     evaluate_rewards = []
 
     for i in range(times):
-        s = env.reset()
+        s = env.reset(task_id=task_id) if task_id is not None else env.reset()
         episode_steps = 0
         episode_reward = 0.0
         dones = np.zeros(env.n)
@@ -193,8 +193,8 @@ def evaluate_robustness(args, env, agents, state_norm, noise_std, times=100):
 # ==========================================
 # 4. 论文核心图表 3：失效恢复过程动态展示
 # ==========================================
-def evaluate_failure_recovery(args, env, agents, state_norm):
-    s = env.reset()
+def evaluate_failure_recovery(args, env, agents, state_norm, task_id=None):
+    s = env.reset(task_id=task_id) if task_id is not None else env.reset()
     step_rewards = []
     dones = np.zeros(env.n)
 
@@ -260,6 +260,7 @@ if __name__ == '__main__':
     parser.add_argument("--use_orthogonal_init", type=bool, default=True)
     parser.add_argument("--set_adam_eps", type=bool, default=True)
     parser.add_argument("--use_tanh", type=bool, default=True)
+    parser.add_argument("--eval_task", type=int, default=-1)
 
     args = parser.parse_args()
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -272,7 +273,7 @@ if __name__ == '__main__':
     args.action_dim = env.action_space[0].shape[0]
     args.max_action = float(env.action_space[0].high[0])
     args.n_red = getattr(args, "n_red", 2)
-    args.task_dim = getattr(args, "task_dim", 3)
+    args.task_dim = getattr(args, "task_dim", 6)
     args.share_state_dim = args.state_dim * args.n_red + args.task_dim + args.n_red
 
     # 【核心修正】：评估时同样要使用共享大脑 + 蓝方规则
@@ -308,6 +309,7 @@ if __name__ == '__main__':
     noise_levels = [0.0, 0.1, 0.2, 0.3, 0.5]
     robustness_winrates = []
     robustness_rewards = []
+    eval_task = None if args.eval_task < 0 else args.eval_task
 
     for noise in noise_levels:
         win_rate, avg_reward = evaluate_robustness(
@@ -316,7 +318,8 @@ if __name__ == '__main__':
             agents,
             state_norm,
             noise_std=noise,
-            times=100
+            times=100,
+            task_id=eval_task
         )
 
         robustness_winrates.append(win_rate)
@@ -333,12 +336,12 @@ if __name__ == '__main__':
     # 保留旧文件名，防止旧版 plot_combined.py 报错
     np.save(f"robustness_data_{args.algo_name}.npy", robustness_rewards)
     print("\n--- 开始进行失效恢复测试 ---")
-    recovery_curve = evaluate_failure_recovery(args, env, agents, state_norm)
+    recovery_curve = evaluate_failure_recovery(args, env, agents, state_norm, task_id=eval_task)
     np.save(f"recovery_data_{args.algo_name}.npy", recovery_curve)
 
     print("\n--- 开始进行 100 局高阶空战效能评估 (实战化指标) ---")
     win_rate, exchange_ratio, avg_win_steps, avg_energy, total_kills, total_deaths = evaluate_combat_metrics(
-        args, env, agents, state_norm, times=100
+        args, env, agents, state_norm, times=100, task_id=eval_task
     )
     print(f"\n=======================================================")
     print(f"        >>> {args.algo_name} 最终战术效能评估报告 <<<")

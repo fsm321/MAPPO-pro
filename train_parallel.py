@@ -110,15 +110,23 @@ class SubprocMPEVecEnv:
 # 主训练循环
 # ======================================================================
 def select_train_task(args, total_steps):
-    if hasattr(args, "fixed_task") and args.fixed_task in [0, 1, 2]:
+    train_tasks = [0, 1, 2, 3, 4, 5]
+
+    if hasattr(args, "fixed_task") and args.fixed_task in train_tasks:
         return args.fixed_task
 
     episode_idx = total_steps // args.max_episode_steps
-    if episode_idx < 20000:
+    if episode_idx < 10000:
         return 0
-    if episode_idx < 50000:
+    if episode_idx < 20000:
         return np.random.choice([0, 1])
-    return np.random.choice([0, 1, 2])
+    if episode_idx < 35000:
+        return np.random.choice([0, 1, 2])
+    if episode_idx < 50000:
+        return np.random.choice([0, 1, 2, 3])
+    if episode_idx < 70000:
+        return np.random.choice([0, 1, 2, 3, 4])
+    return np.random.choice(train_tasks)
 
 
 def save_norm_stats(args, state_norm, ckpt_idx):
@@ -202,7 +210,7 @@ def main(args, seed):
     args.state_dim, args.action_dim, args.max_action = envs.observation_space[0].shape[0], envs.action_space[0].shape[0], float(envs.action_space[0].high[0])
     red_ids = [0, 1]
     args.n_red = len(red_ids)
-    args.task_dim = getattr(args, "task_dim", 3)
+    args.task_dim = getattr(args, "task_dim", 6)
     args.share_state_dim = args.state_dim * args.n_red + args.task_dim + args.n_red
 
     log_dir = f"{args.save_dir}/{args.date}/logs/{args.algo_name}_parallel_seed{seed}"
@@ -225,11 +233,7 @@ def main(args, seed):
     win_history = deque(maxlen=100)
 
     # 三个任务各自维护一个近期胜率窗口
-    task_win_rates = {
-        0: deque(maxlen=50),
-        1: deque(maxlen=50),
-        2: deque(maxlen=50),
-    }
+    task_win_rates = {t_id: deque(maxlen=50) for t_id in range(6)}
 
     state_norm = Normalization(shape=args.state_dim)
     reward_scaling = RewardScaling(shape=(args.num_envs, 2), gamma=args.gamma)
@@ -480,7 +484,7 @@ def main(args, seed):
                             total_episodes
                         )
 
-                        for t_id in range(3):
+                        for t_id in range(6):
                             if len(task_win_rates[t_id]) > 0:
                                 writer.add_scalar(
                                     f"Training/Task_{t_id}_WinRate",
