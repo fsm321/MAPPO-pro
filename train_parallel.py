@@ -16,6 +16,10 @@ from datetime import datetime
 from evaluate_parallel import evaluate_policy
 from utils.normalization import Normalization, RewardScaling
 import multiprocessing as mp
+from env.scenarios.air_combat_2v2 import (
+    META_TRAIN_TASK_IDS,
+    get_train_task_encoder_index,
+)
 
 
 # ======================================================================
@@ -110,7 +114,7 @@ class SubprocMPEVecEnv:
 # 主训练循环
 # ======================================================================
 def select_train_task(args, total_steps):
-    train_tasks = [0, 1, 2, 3, 4, 5]
+    train_tasks = META_TRAIN_TASK_IDS
 
     if hasattr(args, "fixed_task") and args.fixed_task in train_tasks:
         return args.fixed_task
@@ -147,8 +151,14 @@ def make_buffer_args(args, buffer_size):
 
 
 def build_task_onehot(task_id, task_dim):
+    # Critic task encoding is defined over meta-training task families, not raw env task ids.
+    if task_dim != len(META_TRAIN_TASK_IDS):
+        raise ValueError(
+            f"task_dim should match the number of meta-training tasks "
+            f"({len(META_TRAIN_TASK_IDS)}), got {task_dim}."
+        )
     task_onehot = np.zeros(task_dim)
-    task_onehot[int(np.clip(task_id, 0, task_dim - 1))] = 1.0
+    task_onehot[get_train_task_encoder_index(task_id)] = 1.0
     return task_onehot
 
 
@@ -210,7 +220,8 @@ def main(args, seed):
     args.state_dim, args.action_dim, args.max_action = envs.observation_space[0].shape[0], envs.action_space[0].shape[0], float(envs.action_space[0].high[0])
     red_ids = [0, 1]
     args.n_red = len(red_ids)
-    args.task_dim = getattr(args, "task_dim", 6)
+    # Keep critic task encoding aligned with the meta-training task set size.
+    args.task_dim = len(META_TRAIN_TASK_IDS)
     args.share_state_dim = args.state_dim * args.n_red + args.task_dim + args.n_red
 
     log_dir = f"{args.save_dir}/{args.date}/logs/{args.algo_name}_parallel_seed{seed}"
@@ -233,7 +244,7 @@ def main(args, seed):
     win_history = deque(maxlen=100)
 
     # 三个任务各自维护一个近期胜率窗口
-    task_win_rates = {t_id: deque(maxlen=50) for t_id in range(6)}
+    task_win_rates = {t_id: deque(maxlen=50) for t_id in META_TRAIN_TASK_IDS}
 
     state_norm = Normalization(shape=args.state_dim)
     reward_scaling = RewardScaling(shape=(args.num_envs, 2), gamma=args.gamma)
@@ -484,7 +495,7 @@ def main(args, seed):
                             total_episodes
                         )
 
-                        for t_id in range(6):
+                        for t_id in META_TRAIN_TASK_IDS:
                             if len(task_win_rates[t_id]) > 0:
                                 writer.add_scalar(
                                     f"Training/Task_{t_id}_WinRate",
@@ -571,6 +582,11 @@ if __name__ == '__main__':
     parser.add_argument("--use_tanh", type=bool, default=True)
 
     args = parser.parse_args()
+    if args.fixed_task != -1 and args.fixed_task not in META_TRAIN_TASK_IDS:
+        raise ValueError(
+            f"--fixed_task only supports meta-training tasks {META_TRAIN_TASK_IDS}, "
+            f"got {args.fixed_task}."
+        )
     args.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     if not args.date:

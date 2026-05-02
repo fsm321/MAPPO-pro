@@ -8,6 +8,23 @@ from env._mpe_utils.scenario import BaseScenario
 META_TRAIN_TASK_IDS = [0, 1, 2, 3, 4, 5]
 META_TEST_TASK_IDS = [6, 7, 8, 9, 10]
 ALL_TASK_IDS = META_TRAIN_TASK_IDS + META_TEST_TASK_IDS
+TRAIN_TASK_ENCODER_INDEX = {
+    task_id: idx for idx, task_id in enumerate(META_TRAIN_TASK_IDS)
+}
+
+
+def get_train_task_encoder_index(task_id):
+    """
+    Centralized critic uses a 6-dim task code for meta-training tasks only.
+    Keep the environment task id separate so meta-test tasks never get silently clipped.
+    """
+    task_id = int(task_id)
+    if task_id not in TRAIN_TASK_ENCODER_INDEX:
+        raise ValueError(
+            "Centralized critic task encoder only supports meta-training task ids "
+            f"{META_TRAIN_TASK_IDS}, got {task_id}."
+        )
+    return TRAIN_TASK_ENCODER_INDEX[task_id]
 
 TASK_CONFIGS = {
     0: {

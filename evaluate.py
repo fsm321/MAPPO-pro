@@ -12,6 +12,11 @@ from algorithms.mappo import MAPPO_Continuous
 from algorithms.meta_mappo import Meta_MAPPO_Continuous
 import argparse
 import json
+from env.scenarios.air_combat_2v2 import (
+    ALL_TASK_IDS,
+    META_TRAIN_TASK_IDS,
+    META_TEST_TASK_IDS,
+)
 
 def normalize_obs(args, obs, state_norm):
     if args.use_state_norm and state_norm is not None:
@@ -273,7 +278,8 @@ if __name__ == '__main__':
     args.action_dim = env.action_space[0].shape[0]
     args.max_action = float(env.action_space[0].high[0])
     args.n_red = getattr(args, "n_red", 2)
-    args.task_dim = getattr(args, "task_dim", 6)
+    # Critic checkpoint shape is tied to meta-training task encoding only.
+    args.task_dim = len(META_TRAIN_TASK_IDS)
     args.share_state_dim = args.state_dim * args.n_red + args.task_dim + args.n_red
 
     # 【核心修正】：评估时同样要使用共享大脑 + 蓝方规则
@@ -309,7 +315,15 @@ if __name__ == '__main__':
     noise_levels = [0.0, 0.1, 0.2, 0.3, 0.5]
     robustness_winrates = []
     robustness_rewards = []
-    eval_task = None if args.eval_task < 0 else args.eval_task
+    eval_task = None if args.eval_task < 0 else int(args.eval_task)
+    if eval_task is not None and eval_task not in ALL_TASK_IDS:
+        raise ValueError(
+            f"--eval_task must be one of {ALL_TASK_IDS}, got {eval_task}."
+        )
+    if eval_task in META_TEST_TASK_IDS:
+        print(f"当前评估任务: U{eval_task - META_TEST_TASK_IDS[0]} (task_id={eval_task})")
+    elif eval_task in META_TRAIN_TASK_IDS:
+        print(f"当前评估任务: T{eval_task} (task_id={eval_task})")
 
     for noise in noise_levels:
         win_rate, avg_reward = evaluate_robustness(
