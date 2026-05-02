@@ -412,7 +412,11 @@ def main(args, seed):
                     )
 
                     if not red_active_mask[env_idx][j]:
-                        continue
+                        dw = True
+                        done_for_gae = True
+                        scaled_reward = 0.0
+                    else:
+                        scaled_reward = scaled_red_rewards[env_idx][j]
 
                     if args.algo_name == "Meta-MAPPO":
                         if env_idx < args.meta_support_envs:
@@ -427,7 +431,7 @@ def main(args, seed):
                         share_obs,
                         a_batch[env_idx][j],
                         a_logp_batch[env_idx][j],
-                        scaled_red_rewards[env_idx][j],
+                        scaled_reward,
                         s_next_normed_red[j],
                         share_obs_next,
                         dw,
