@@ -21,7 +21,10 @@ import multiprocessing as mp
 # ======================================================================
 # 多进程环境后台 Worker
 # ======================================================================
-def worker(remote, parent_remote, env_class, args):
+def worker(remote, parent_remote, env_class, args, rank):
+    base_seed = getattr(args, "seed", 0)
+    np.random.seed(base_seed + 1000 * rank)
+    torch.manual_seed(base_seed + 1000 * rank)
     parent_remote.close()
     env = env_class(args)
     current_task = 0
@@ -69,8 +72,8 @@ class SubprocMPEVecEnv:
         self.num_envs = num_envs
         self.remotes, self.work_remotes = zip(*[mp.Pipe() for _ in range(num_envs)])
         self.processes = []
-        for work_remote, remote in zip(self.work_remotes, self.remotes):
-            p = mp.Process(target=worker, args=(work_remote, remote, env_class, args))
+        for rank, (work_remote, remote) in enumerate(zip(self.work_remotes, self.remotes)):
+            p = mp.Process(target=worker, args=(work_remote, remote, env_class, args, rank))
             p.daemon = True
             p.start()
             self.processes.append(p)
@@ -192,6 +195,7 @@ def select_meta_reset_task(args, env_idx, env_task_ids, total_steps):
 def main(args, seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
+    args.seed = seed
 
     print(f"==> 正在启动 {args.num_envs} 个并行环境...")
     envs = SubprocMPEVecEnv(args.num_envs, MPEEnv, args)
@@ -235,6 +239,7 @@ def main(args, seed):
         env_task_ids = np.array([select_train_task(args, total_steps) for _ in range(args.num_envs)])
     s = envs.reset(env_task_ids)
     episode_steps = np.zeros(args.num_envs, dtype=int)
+    red_active_mask = np.ones((args.num_envs, len(red_ids)), dtype=bool)
 
     # 防止 save/eval 在同一里程碑被重复触发
     last_save_index = -1
@@ -334,6 +339,12 @@ def main(args, seed):
                 env_actions = [np.zeros(args.action_dim) for _ in range(envs.n)]
 
                 for j, rid in enumerate(red_ids):
+                    if not red_active_mask[env_idx][j]:
+                        env_actions[rid] = np.zeros(args.action_dim)
+                        a_batch[env_idx][j] = np.zeros(args.action_dim)
+                        a_logp_batch[env_idx][j] = np.zeros(1)
+                        continue
+
                     if args.policy_dist == "Beta":
                         env_actions[rid] = 2 * (a_batch[env_idx][j] - 0.5) * args.max_action
                     else:
@@ -400,6 +411,9 @@ def main(args, seed):
                         n_red=args.n_red
                     )
 
+                    if not red_active_mask[env_idx][j]:
+                        continue
+
                     if args.algo_name == "Meta-MAPPO":
                         if env_idx < args.meta_support_envs:
                             target_buffer = support_buffer
@@ -419,6 +433,9 @@ def main(args, seed):
                         dw,
                         done_for_gae
                     )
+
+                    if done[env_idx][rid] and not np.all(done[env_idx]) and episode_steps[env_idx] < args.max_episode_steps:
+                        red_active_mask[env_idx][j] = False
 
                 # ======================================================
                 # 7. 如果当前环境结束或达到最大步数，统计胜率并重置该环境
@@ -449,6 +466,7 @@ def main(args, seed):
                         new_task = select_train_task(args, total_steps)
                     env_task_ids[env_idx] = new_task
                     s_next[env_idx] = envs.force_reset(env_idx, new_task)
+                    red_active_mask[env_idx] = True
                     episode_steps[env_idx] = 0
 
                     if total_episodes % 50 == 0 and len(win_history) > 0:

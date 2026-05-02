@@ -127,6 +127,9 @@ class World(object):
             else:
                 agent.action.u = np.asarray(agent.action_callback(agent, self), dtype=float)
         for agent in self.agents:
+            if getattr(agent, 'is_dead', False):
+                agent.action.u = np.zeros(self.dim_a)
+                continue
             if agent.movable:
                 self.update_agent_state(agent)
 

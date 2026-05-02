@@ -192,7 +192,8 @@ class Scenario(BaseScenario):
                 rew += 15.0
                 if getattr(agent, 'kill_enemy_this_step', False):
                     rew += 120.0
-            return rew + 60.0
+            rew += 60.0
+            return np.clip(rew, -25.0, 80.0)
 
         d_min, t_en = min([(math.sqrt(
             (e.state.p_pos[0] - agent.state.p_pos[0]) ** 2 + (e.state.p_pos[1] - agent.state.p_pos[1]) ** 2 + (
