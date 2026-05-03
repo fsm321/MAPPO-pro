@@ -45,8 +45,12 @@ def worker(remote, parent_remote, env_class, args, rank):
                 # 无论是否结束，每一步都实时计算当前的存活胜负状态
                 world = getattr(env, 'world', None) or getattr(env.env, 'world', None)
                 if world is not None:
+                    r_total = sum([1 for a in world.agents if a.team == 0])
+                    b_total = sum([1 for a in world.agents if a.team == 1])
                     r_a = sum([1 for a in world.agents if a.team == 0 and not a.is_dead])
                     b_a = sum([1 for a in world.agents if a.team == 1 and not a.is_dead])
+                    info['r_total'] = r_total
+                    info['b_total'] = b_total
                     info['r_a'] = r_a
                     info['b_a'] = b_a
 
@@ -242,6 +246,13 @@ def main(args, seed):
 
     total_steps, total_episodes = 0, 0
     win_history = deque(maxlen=100)
+    full_kill_win_history = deque(maxlen=100)
+    no_loss_win_history = deque(maxlen=100)
+    partial_advantage_history = deque(maxlen=100)
+    timeout_advantage_win_history = deque(maxlen=100)
+    blue_death_history = deque(maxlen=100)
+    red_death_history = deque(maxlen=100)
+    episode_length_history = deque(maxlen=100)
 
     # 三个任务各自维护一个近期胜率窗口
     task_win_rates = {t_id: deque(maxlen=50) for t_id in META_TRAIN_TASK_IDS}
@@ -302,15 +313,15 @@ def main(args, seed):
                         outer_epochs=args.meta_outer_epochs
                     )
 
-                    writer.add_scalar("Training/Support_Actor_Loss", sl_a, total_steps)
-                    writer.add_scalar("Training/Support_Critic_Loss", sl_c, total_steps)
-                    writer.add_scalar("Training/Query_Actor_Loss", ql_a, total_steps)
-                    writer.add_scalar("Training/Query_Critic_Loss", ql_c, total_steps)
+                    writer.add_scalar("Training/Support_Actor_Loss", sl_a, total_episodes)
+                    writer.add_scalar("Training/Support_Critic_Loss", sl_c, total_episodes)
+                    writer.add_scalar("Training/Query_Actor_Loss", ql_a, total_episodes)
+                    writer.add_scalar("Training/Query_Critic_Loss", ql_c, total_episodes)
 
                     # 保留原有 Actor/Critic 图，便于直接和旧实验对比。
-                    writer.add_scalar("Training/Actor_Loss", ql_a, total_steps)
-                    writer.add_scalar("Training/Critic_Loss", ql_c, total_steps)
-                    writer.add_scalar("Training/Meta_LR", meta_lr, total_steps)
+                    writer.add_scalar("Training/Actor_Loss", ql_a, total_episodes)
+                    writer.add_scalar("Training/Critic_Loss", ql_c, total_episodes)
+                    writer.add_scalar("Training/Meta_LR", meta_lr, total_episodes)
 
                     support_buffer.count = 0
                     query_buffer.count = 0
@@ -321,8 +332,8 @@ def main(args, seed):
                 if shared_buffer.count + rollout_add_size > args.buffer_size:
                     al, cl = shared_agent.update(shared_buffer, total_steps)
 
-                    writer.add_scalar("Training/Actor_Loss", al, total_steps)
-                    writer.add_scalar("Training/Critic_Loss", cl, total_steps)
+                    writer.add_scalar("Training/Actor_Loss", al, total_episodes)
+                    writer.add_scalar("Training/Critic_Loss", cl, total_episodes)
 
                     shared_buffer.count = 0
 
@@ -471,15 +482,36 @@ def main(args, seed):
                     if "r_a" in infos[env_idx] and "b_a" in infos[env_idx]:
                         r_a = infos[env_idx]["r_a"]
                         b_a = infos[env_idx]["b_a"]
+                        red_team_size = infos[env_idx].get("r_total", len(red_ids))
+                        blue_team_size = infos[env_idx].get("b_total", 2)
+
+                        red_dead = red_team_size - r_a
+                        blue_dead = blue_team_size - b_a
+
+                        full_kill_win = int(b_a == 0 and r_a > 0)
+                        no_loss_win = int(b_a == 0 and r_a == red_team_size)
+                        partial_advantage = int((not full_kill_win) and blue_dead > red_dead)
+                        timeout_advantage_win = int(
+                            (not full_kill_win)
+                            and episode_steps[env_idx] >= args.max_episode_steps
+                            and blue_dead > red_dead
+                        )
 
                         if b_a == 0 and r_a > 0:
                             is_win = 1
-                        elif episode_steps[env_idx] >= args.max_episode_steps and r_a > b_a:
+                        elif timeout_advantage_win:
                             is_win = 1
                         else:
                             is_win = 0
 
                         win_history.append(is_win)
+                        full_kill_win_history.append(full_kill_win)
+                        no_loss_win_history.append(no_loss_win)
+                        partial_advantage_history.append(partial_advantage)
+                        timeout_advantage_win_history.append(timeout_advantage_win)
+                        blue_death_history.append(blue_dead)
+                        red_death_history.append(red_dead)
+                        episode_length_history.append(episode_steps[env_idx])
                         task_win_rates[env_task_ids[env_idx]].append(is_win)
 
                     if args.algo_name == "Meta-MAPPO":
@@ -495,6 +527,41 @@ def main(args, seed):
                         writer.add_scalar(
                             "Training/Win_Rate",
                             100 * sum(win_history) / len(win_history),
+                            total_episodes
+                        )
+                        writer.add_scalar(
+                            "Training/Full_Kill_WinRate",
+                            100 * sum(full_kill_win_history) / len(full_kill_win_history),
+                            total_episodes
+                        )
+                        writer.add_scalar(
+                            "Training/No_Loss_WinRate",
+                            100 * sum(no_loss_win_history) / len(no_loss_win_history),
+                            total_episodes
+                        )
+                        writer.add_scalar(
+                            "Training/NonFullKill_AdvantageRate",
+                            100 * sum(partial_advantage_history) / len(partial_advantage_history),
+                            total_episodes
+                        )
+                        writer.add_scalar(
+                            "Training/Timeout_Advantage_WinRate",
+                            100 * sum(timeout_advantage_win_history) / len(timeout_advantage_win_history),
+                            total_episodes
+                        )
+                        writer.add_scalar(
+                            "Training/Avg_Blue_Deaths",
+                            sum(blue_death_history) / len(blue_death_history),
+                            total_episodes
+                        )
+                        writer.add_scalar(
+                            "Training/Avg_Red_Deaths",
+                            sum(red_death_history) / len(red_death_history),
+                            total_episodes
+                        )
+                        writer.add_scalar(
+                            "Training/Avg_Episode_Length",
+                            sum(episode_length_history) / len(episode_length_history),
                             total_episodes
                         )
 
@@ -523,7 +590,7 @@ def main(args, seed):
 
             if current_episode_index > 0 and current_episode_index % args.evaluate_freq == 0 and current_episode_index != last_eval_index:
                 e_r = evaluate_policy(args, MPEEnv(args), [shared_agent, shared_agent, None, None], state_norm)
-                writer.add_scalar("eval/reward", e_r, current_episode_index)
+                writer.add_scalar("eval/reward", e_r, total_episodes)
                 last_eval_index = current_episode_index
 
         final_ckpt = total_steps // args.max_episode_steps
