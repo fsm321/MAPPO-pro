@@ -641,8 +641,8 @@ class Scenario(BaseScenario):
 
         in_attack_zone = distance < blue_attack_range and ata < blue_attack_angle
 
-        # Entering the attack envelope gets a large immediate bonus.
-        attack_score = 120.0 if in_attack_zone else 0.0
+        # Increase the attack bonus so blue does not over-prefer safe stalling.
+        attack_score = 150.0 if in_attack_zone else 0.0
 
         # Low-health targets get a finishing bonus.
         target_hp = getattr(target, "hp", 100.0)
@@ -668,7 +668,7 @@ class Scenario(BaseScenario):
             )
 
             if red_dist < red_attack_range and red_ata < red_attack_angle:
-                threat_penalty += 100.0
+                threat_penalty += 70.0
             else:
                 # Apply a softer penalty when approaching the red attack zone.
                 near_factor = max(
@@ -693,10 +693,10 @@ class Scenario(BaseScenario):
         altitude_score = 0.0
         if tactic == 3:
             desired_altitude = 7.2
-            altitude_score = -abs(next_z - desired_altitude)
+            altitude_score = -5.0 * abs(next_z - desired_altitude)
         elif tactic == 4:
             desired_altitude = 2.8
-            altitude_score = -abs(next_z - desired_altitude)
+            altitude_score = -5.0 * abs(next_z - desired_altitude)
 
         # Penalize large step-to-step action changes to reduce jitter.
         last_action = getattr(agent, "last_action", np.zeros(3))
@@ -754,6 +754,25 @@ class Scenario(BaseScenario):
         min_dist = min(dists)
         if min_dist <= 6.0:
             agent.combat_mode = True
+
+        # Keep a direct close-in behavior at long range to avoid weak opening motion.
+        if min_dist > 8.0 and not agent.combat_mode:
+            closest_red = red_agents[np.argmin(dists)]
+            rel_p = closest_red.state.p_pos - agent.state.p_pos
+            target_yaw = math.atan2(rel_p[1], rel_p[0])
+            yaw_diff = self._wrap_angle(target_yaw - agent.state.yaw)
+            roll_cmd = np.clip(yaw_diff / (math.pi / 2), -1.0, 1.0)
+
+            z_diff = closest_red.state.z_pos - agent.state.z_pos
+            nz_cmd = 0.4 if z_diff > 0 else -0.4
+
+            action = np.array([1.0, nz_cmd, roll_cmd], dtype=np.float32)
+            action = self._scale_blue_action(action, cfg)
+
+            noise_std = cfg.get("blue_noise", 0.15)
+            action = action + np.random.normal(0, noise_std, size=3)
+
+            return np.clip(action, -1.0, 1.0)
 
         candidate_actions = self._blue_candidate_actions(
             agent=agent,
