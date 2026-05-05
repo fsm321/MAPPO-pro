@@ -313,15 +313,15 @@ def main(args, seed):
                         outer_epochs=args.meta_outer_epochs
                     )
 
-                    writer.add_scalar("Training/Support_Actor_Loss", sl_a, total_episodes)
-                    writer.add_scalar("Training/Support_Critic_Loss", sl_c, total_episodes)
-                    writer.add_scalar("Training/Query_Actor_Loss", ql_a, total_episodes)
-                    writer.add_scalar("Training/Query_Critic_Loss", ql_c, total_episodes)
+                    writer.add_scalar("Debug/Support_Actor_Loss", sl_a, total_episodes)
+                    writer.add_scalar("Debug/Support_Critic_Loss", sl_c, total_episodes)
+                    writer.add_scalar("Debug/Query_Actor_Loss", ql_a, total_episodes)
+                    writer.add_scalar("Debug/Query_Critic_Loss", ql_c, total_episodes)
 
                     # 保留原有 Actor/Critic 图，便于直接和旧实验对比。
-                    writer.add_scalar("Training/Actor_Loss", ql_a, total_episodes)
-                    writer.add_scalar("Training/Critic_Loss", ql_c, total_episodes)
-                    writer.add_scalar("Training/Meta_LR", meta_lr, total_episodes)
+                    writer.add_scalar("Debug/Actor_Loss", ql_a, total_episodes)
+                    writer.add_scalar("Debug/Critic_Loss", ql_c, total_episodes)
+                    writer.add_scalar("Debug/Meta_LR", meta_lr, total_episodes)
 
                     support_buffer.count = 0
                     query_buffer.count = 0
@@ -332,8 +332,8 @@ def main(args, seed):
                 if shared_buffer.count + rollout_add_size > args.buffer_size:
                     al, cl = shared_agent.update(shared_buffer, total_steps)
 
-                    writer.add_scalar("Training/Actor_Loss", al, total_episodes)
-                    writer.add_scalar("Training/Critic_Loss", cl, total_episodes)
+                    writer.add_scalar("Debug/Actor_Loss", al, total_episodes)
+                    writer.add_scalar("Debug/Critic_Loss", cl, total_episodes)
 
                     shared_buffer.count = 0
 
@@ -525,42 +525,42 @@ def main(args, seed):
 
                     if total_episodes % 50 == 0 and len(win_history) > 0:
                         writer.add_scalar(
-                            "Training/Win_Rate",
+                            "Performance/Win_Rate",
                             100 * sum(win_history) / len(win_history),
                             total_episodes
                         )
                         writer.add_scalar(
-                            "Training/Full_Kill_WinRate",
+                            "Performance/Full_Kill_WinRate",
                             100 * sum(full_kill_win_history) / len(full_kill_win_history),
                             total_episodes
                         )
                         writer.add_scalar(
-                            "Training/No_Loss_WinRate",
+                            "Performance/No_Loss_WinRate",
                             100 * sum(no_loss_win_history) / len(no_loss_win_history),
                             total_episodes
                         )
                         writer.add_scalar(
-                            "Training/NonFullKill_AdvantageRate",
+                            "Debug/NonFullKill_AdvantageRate",
                             100 * sum(partial_advantage_history) / len(partial_advantage_history),
                             total_episodes
                         )
                         writer.add_scalar(
-                            "Training/Timeout_Advantage_WinRate",
+                            "Debug/Timeout_Advantage_WinRate",
                             100 * sum(timeout_advantage_win_history) / len(timeout_advantage_win_history),
                             total_episodes
                         )
                         writer.add_scalar(
-                            "Training/Avg_Blue_Deaths",
+                            "Performance/Avg_Blue_Deaths",
                             sum(blue_death_history) / len(blue_death_history),
                             total_episodes
                         )
                         writer.add_scalar(
-                            "Training/Avg_Red_Deaths",
+                            "Performance/Avg_Red_Deaths",
                             sum(red_death_history) / len(red_death_history),
                             total_episodes
                         )
                         writer.add_scalar(
-                            "Training/Avg_Episode_Length",
+                            "Performance/Avg_Episode_Length",
                             sum(episode_length_history) / len(episode_length_history),
                             total_episodes
                         )
@@ -568,7 +568,7 @@ def main(args, seed):
                         for t_id in META_TRAIN_TASK_IDS:
                             if len(task_win_rates[t_id]) > 0:
                                 writer.add_scalar(
-                                    f"Training/Task_{t_id}_WinRate",
+                                    f"Task/Task_{t_id}_WinRate",
                                     100 * sum(task_win_rates[t_id]) / len(task_win_rates[t_id]),
                                     total_episodes
                                 )
