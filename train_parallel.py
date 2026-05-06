@@ -313,15 +313,16 @@ def main(args, seed):
                         outer_epochs=args.meta_outer_epochs
                     )
 
-                    writer.add_scalar("Debug/Support_Actor_Loss", sl_a, total_episodes)
-                    writer.add_scalar("Debug/Support_Critic_Loss", sl_c, total_episodes)
-                    writer.add_scalar("Debug/Query_Actor_Loss", ql_a, total_episodes)
-                    writer.add_scalar("Debug/Query_Critic_Loss", ql_c, total_episodes)
+                    # Use environment steps as TensorBoard x-axis for training-progress alignment.
+                    writer.add_scalar("Debug/Support_Actor_Loss", sl_a, total_steps)
+                    writer.add_scalar("Debug/Support_Critic_Loss", sl_c, total_steps)
+                    writer.add_scalar("Debug/Query_Actor_Loss", ql_a, total_steps)
+                    writer.add_scalar("Debug/Query_Critic_Loss", ql_c, total_steps)
 
                     # 保留原有 Actor/Critic 图，便于直接和旧实验对比。
-                    writer.add_scalar("Debug/Actor_Loss", ql_a, total_episodes)
-                    writer.add_scalar("Debug/Critic_Loss", ql_c, total_episodes)
-                    writer.add_scalar("Debug/Meta_LR", meta_lr, total_episodes)
+                    writer.add_scalar("Debug/Actor_Loss", ql_a, total_steps)
+                    writer.add_scalar("Debug/Critic_Loss", ql_c, total_steps)
+                    writer.add_scalar("Debug/Meta_LR", meta_lr, total_steps)
 
                     support_buffer.count = 0
                     query_buffer.count = 0
@@ -332,8 +333,9 @@ def main(args, seed):
                 if shared_buffer.count + rollout_add_size > args.buffer_size:
                     al, cl = shared_agent.update(shared_buffer, total_steps)
 
-                    writer.add_scalar("Debug/Actor_Loss", al, total_episodes)
-                    writer.add_scalar("Debug/Critic_Loss", cl, total_episodes)
+                    # Use environment steps as TensorBoard x-axis for training-progress alignment.
+                    writer.add_scalar("Debug/Actor_Loss", al, total_steps)
+                    writer.add_scalar("Debug/Critic_Loss", cl, total_steps)
 
                     shared_buffer.count = 0
 
@@ -524,43 +526,55 @@ def main(args, seed):
                     episode_steps[env_idx] = 0
 
                     if total_episodes % 50 == 0 and len(win_history) > 0:
+                        # This vector step is added below; log metrics at the post-step TensorBoard x-axis value.
+                        tb_step = total_steps + args.num_envs
                         writer.add_scalar(
                             "Performance/Win_Rate",
+                            100 * sum(win_history) / len(win_history),
+                            tb_step
+                        )
+                        writer.add_scalar(
+                            "Episode/Win_Rate",
                             100 * sum(win_history) / len(win_history),
                             total_episodes
                         )
                         writer.add_scalar(
                             "Performance/Full_Kill_WinRate",
                             100 * sum(full_kill_win_history) / len(full_kill_win_history),
-                            total_episodes
+                            tb_step
                         )
                         writer.add_scalar(
                             "Performance/No_Loss_WinRate",
                             100 * sum(no_loss_win_history) / len(no_loss_win_history),
-                            total_episodes
+                            tb_step
                         )
                         writer.add_scalar(
                             "Debug/NonFullKill_AdvantageRate",
                             100 * sum(partial_advantage_history) / len(partial_advantage_history),
-                            total_episodes
+                            tb_step
                         )
                         writer.add_scalar(
                             "Debug/Timeout_Advantage_WinRate",
                             100 * sum(timeout_advantage_win_history) / len(timeout_advantage_win_history),
-                            total_episodes
+                            tb_step
                         )
                         writer.add_scalar(
                             "Performance/Avg_Blue_Deaths",
                             sum(blue_death_history) / len(blue_death_history),
-                            total_episodes
+                            tb_step
                         )
                         writer.add_scalar(
                             "Performance/Avg_Red_Deaths",
                             sum(red_death_history) / len(red_death_history),
-                            total_episodes
+                            tb_step
                         )
                         writer.add_scalar(
                             "Performance/Avg_Episode_Length",
+                            sum(episode_length_history) / len(episode_length_history),
+                            tb_step
+                        )
+                        writer.add_scalar(
+                            "Episode/Avg_Episode_Length",
                             sum(episode_length_history) / len(episode_length_history),
                             total_episodes
                         )
@@ -570,7 +584,7 @@ def main(args, seed):
                                 writer.add_scalar(
                                     f"Task/Task_{t_id}_WinRate",
                                     100 * sum(task_win_rates[t_id]) / len(task_win_rates[t_id]),
-                                    total_episodes
+                                    tb_step
                                 )
 
             s = s_next
@@ -590,7 +604,7 @@ def main(args, seed):
 
             if current_episode_index > 0 and current_episode_index % args.evaluate_freq == 0 and current_episode_index != last_eval_index:
                 e_r = evaluate_policy(args, MPEEnv(args), [shared_agent, shared_agent, None, None], state_norm)
-                writer.add_scalar("eval/reward", e_r, total_episodes)
+                writer.add_scalar("eval/reward", e_r, total_steps)
                 last_eval_index = current_episode_index
 
         final_ckpt = total_steps // args.max_episode_steps
