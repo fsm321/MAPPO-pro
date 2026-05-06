@@ -550,8 +550,8 @@ if __name__ == '__main__':
     parser.add_argument("--policy_dist", type=str, default="Gaussian")
 
     parser.add_argument("--hidden_width", type=int, default=256)
-    parser.add_argument("--max_episode_steps", type=int, default=500)
-    parser.add_argument("--max_train_steps", type=int, default=5e8)
+    parser.add_argument("--max_episode_steps", type=int, default=256)
+    parser.add_argument("--max_train_steps", type=int, default=2.56e8)
 
     parser.add_argument("--batch_size", type=int, default=6000)
     parser.add_argument("--mini_batch_size", type=int, default=1000)

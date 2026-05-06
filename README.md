@@ -11,7 +11,7 @@ git push
 ## 训练
 ```bash
 D:
-cd D:\Meta-MAPPO\Meta-MAPPO\9.0
+cd D:\Meta-MAPPO\Meta-MAPPO\10.0
 python run_experiments.py
 ```
 
@@ -21,13 +21,13 @@ python run_experiments.py
 ### 1.奖励曲线，胜率
 ```bash
 D:
-cd D:\Meta-MAPPO\Meta-MAPPO\9.0
+cd D:\Meta-MAPPO\Meta-MAPPO\10.0
 tensorboard --logdir=./data
 ```
 在plot_TensorBoard文件中改数据地址
 ```bash
 D:
-cd D:\Meta-MAPPO\Meta-MAPPO\7.2\result
+cd D:\Meta-MAPPO\Meta-MAPPO\10.0\result
 python plot_TensorBoard.py
 ```
 
@@ -82,7 +82,7 @@ python plot_3D.py --algo_name MAPPO --model_dir ./data/0426_213301/model/340000 
 python train.py \
 
     --max_train_steps 500000000 \#最大训练步数
-    --max_episode_steps 500 \#每个回合最大步数
+    --max_episode_steps 256 \#每个回合最大步数
     --evaluate_freq 500 \#评估频率
     --save_freq  1000 \#模型保存频率
     --buffer_size 4000 \#经验回放池容量
