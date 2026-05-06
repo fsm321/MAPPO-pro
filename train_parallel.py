@@ -630,10 +630,11 @@ if __name__ == '__main__':
     parser.add_argument("--date", type=str, default="")
     parser.add_argument("--fixed_task", type=int, default=-1)
 
-    parser.add_argument("--max_episode_steps", type=int, default=500)
-    parser.add_argument("--max_train_steps", type=int, default=int(5e8))
-    parser.add_argument("--evaluate_freq", type=int, default=500)
-    parser.add_argument("--save_freq", type=int, default=1000)
+    # Keep default training length aligned with the final greedy-opponent setup.
+    parser.add_argument("--max_episode_steps", type=int, default=256)
+    parser.add_argument("--max_train_steps", type=int, default=int(2.56e8))
+    parser.add_argument("--evaluate_freq", type=int, default=1000)
+    parser.add_argument("--save_freq", type=int, default=2000)
 
     parser.add_argument("--save_dir", type=str, default="./data")
     parser.add_argument("--model_dir", type=str, default="")
