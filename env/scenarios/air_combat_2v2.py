@@ -612,6 +612,98 @@ class Scenario(BaseScenario):
             "altitude": 0.0,
         }
 
+    def _blue_target_priority_score(self, blue, red):
+        """
+        Score how suitable a red agent is as the current target of a blue agent.
+        The heuristic prefers closer targets, better heading geometry, and lower hp.
+        """
+        distance, ata = fast_compute_distance_and_angle_scalar(
+            blue.state.p_pos[0], blue.state.p_pos[1], blue.state.z_pos,
+            red.state.p_pos[0], red.state.p_pos[1], red.state.z_pos,
+            blue.state.yaw, blue.state.pitch
+        )
+
+        target_hp = getattr(red, "hp", 100.0)
+        distance_score = -2.0 * distance
+        angle_score = 12.0 * max(0.0, 1.0 - ata / math.pi)
+        hp_score = 0.15 * (100.0 - target_hp)
+
+        return distance_score + angle_score + hp_score
+
+    def _assign_blue_targets(self, world, blue_agents, red_agents):
+        """
+        Assign blue agents to red targets.
+
+        If only one red is alive, all blues focus that target.
+        If two reds are alive, use a one-to-one assignment to avoid duplicate pursuit.
+        """
+        assignments = {}
+
+        live_blues = [agent for agent in blue_agents if not agent.is_dead]
+        live_reds = [agent for agent in red_agents if not agent.is_dead]
+
+        if not live_blues or not live_reds:
+            return assignments
+
+        live_blues = sorted(live_blues, key=lambda blue: blue.name)
+        live_reds = sorted(live_reds, key=lambda red: red.name)
+
+        if len(live_reds) == 1:
+            for blue in live_blues:
+                assignments[blue] = live_reds[0]
+            return assignments
+
+        if len(live_blues) == 1:
+            best_red = max(
+                live_reds,
+                key=lambda red: self._blue_target_priority_score(live_blues[0], red)
+            )
+            assignments[live_blues[0]] = best_red
+            return assignments
+
+        # In the 2v2 case, evaluate one-to-one matchings and keep the best total score.
+        best_total_score = -1e18
+        best_pairing = None
+        first_blue = live_blues[0]
+        second_blue = live_blues[1]
+
+        for first_red in live_reds:
+            for second_red in live_reds:
+                if second_red is first_red:
+                    continue
+
+                total_score = (
+                    self._blue_target_priority_score(first_blue, first_red)
+                    + self._blue_target_priority_score(second_blue, second_red)
+                )
+
+                if total_score > best_total_score:
+                    best_total_score = total_score
+                    best_pairing = (first_red, second_red)
+
+        if best_pairing is not None:
+            assignments[first_blue] = best_pairing[0]
+            assignments[second_blue] = best_pairing[1]
+
+            for blue in live_blues[2:]:
+                best_red = max(
+                    live_reds,
+                    key=lambda red: self._blue_target_priority_score(blue, red)
+                )
+                assignments[blue] = best_red
+
+            return assignments
+
+        # Fallback: if the one-to-one assignment fails, each blue picks its best target.
+        for blue in live_blues:
+            best_red = max(
+                live_reds,
+                key=lambda red: self._blue_target_priority_score(blue, red)
+            )
+            assignments[blue] = best_red
+
+        return assignments
+
     def _blue_greedy_score(self, agent, world, target, action, cfg):
         """
         Compute the one-step greedy utility J(a) for a blue action.
@@ -740,6 +832,14 @@ class Scenario(BaseScenario):
         # Preserve the original task-driven tactic switching mechanism.
         self._assign_blue_tactics(world, cfg)
 
+        blue_agents = [a for a in world.agents if a.team == 1 and not a.is_dead]
+        assigned_targets = self._assign_blue_targets(
+            world=world,
+            blue_agents=blue_agents,
+            red_agents=red_agents
+        )
+        assigned_target = assigned_targets.get(agent, None)
+
         # Record close combat entry without reverting the original flag behavior.
         my_pos = (agent.state.p_pos[0], agent.state.p_pos[1], agent.state.z_pos)
         dists = [
@@ -757,13 +857,13 @@ class Scenario(BaseScenario):
 
         # Keep a direct close-in behavior at long range to avoid weak opening motion.
         if min_dist > 8.0 and not agent.combat_mode:
-            closest_red = red_agents[np.argmin(dists)]
-            rel_p = closest_red.state.p_pos - agent.state.p_pos
+            target_red = assigned_target if assigned_target is not None else red_agents[np.argmin(dists)]
+            rel_p = target_red.state.p_pos - agent.state.p_pos
             target_yaw = math.atan2(rel_p[1], rel_p[0])
             yaw_diff = self._wrap_angle(target_yaw - agent.state.yaw)
             roll_cmd = np.clip(yaw_diff / (math.pi / 2), -1.0, 1.0)
 
-            z_diff = closest_red.state.z_pos - agent.state.z_pos
+            z_diff = target_red.state.z_pos - agent.state.z_pos
             nz_cmd = 0.4 if z_diff > 0 else -0.4
 
             action = np.array([1.0, nz_cmd, roll_cmd], dtype=np.float32)
@@ -788,16 +888,25 @@ class Scenario(BaseScenario):
         for raw_action in candidate_actions:
             scaled_action = self._scale_blue_action(raw_action, cfg)
 
-            action_score = max([
-                self._blue_greedy_score(
+            if assigned_target is not None:
+                action_score = self._blue_greedy_score(
                     agent=agent,
                     world=world,
-                    target=target,
+                    target=assigned_target,
                     action=scaled_action,
                     cfg=cfg
                 )
-                for target in red_agents
-            ])
+            else:
+                action_score = max([
+                    self._blue_greedy_score(
+                        agent=agent,
+                        world=world,
+                        target=target,
+                        action=scaled_action,
+                        cfg=cfg
+                    )
+                    for target in red_agents
+                ])
 
             if action_score > best_score:
                 best_score = action_score
