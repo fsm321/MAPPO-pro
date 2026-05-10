@@ -290,17 +290,17 @@ def main(args, seed):
                 )
 
                 if buffer_ready:
-                    progress = min(total_steps / args.max_train_steps, 1.0)
-                    current_performance = sum(win_history) / len(win_history) if len(win_history) > 0 else 0.0
+                    #progress = min(total_steps / args.max_train_steps, 1.0)
+                    #current_performance = sum(win_history) / len(win_history) if len(win_history) > 0 else 0.0
+                    meta_lr = args.meta_lr
+                    #if current_performance < 0.35:
+                    #    meta_lr = 0.08 * (1.0 - progress ** 0.5)
+                    #elif current_performance > 0.70:
+                    #    meta_lr = 0.05 * (1.0 - progress ** 1.5)
+                    #else:
+                    #    meta_lr = 0.06 * (1.0 - progress)
 
-                    if current_performance < 0.35:
-                        meta_lr = 0.08 * (1.0 - progress ** 0.5)
-                    elif current_performance > 0.70:
-                        meta_lr = 0.05 * (1.0 - progress ** 1.5)
-                    else:
-                        meta_lr = 0.06 * (1.0 - progress)
-
-                    meta_lr = max(meta_lr, 1e-4)
+                    #meta_lr = max(meta_lr, 1e-4)
 
                     sl_a, sl_c, ql_a, ql_c = shared_agent.meta_train_step(
                         support_buffer=support_buffer,
@@ -639,7 +639,7 @@ if __name__ == '__main__':
     parser.add_argument("--meta_support_envs", type=int, default=4)
     parser.add_argument("--meta_inner_epochs", type=int, default=1)
     parser.add_argument("--meta_outer_epochs", type=int, default=1)
-
+    parser.add_argument("--meta_lr", type=float, default=0.005)
     parser.add_argument("--seed", type=int, default=10)
     parser.add_argument("--date", type=str, default="")
     parser.add_argument("--fixed_task", type=int, default=-1)

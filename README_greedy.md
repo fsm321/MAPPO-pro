@@ -140,7 +140,7 @@ tensorboard --logdir=./data
 
 ```bash
 D:
-cd D:\Meta-MAPPO\Meta-MAPPO\MAPPO-pro\result
+cd D:\Meta-MAPPO\Meta-MAPPO\10.0\result
 python plot_TensorBoard.py
 ```
 
@@ -161,19 +161,17 @@ D:
 cd D:\Meta-MAPPO\Meta-MAPPO\10.0
 python evaluate.py ^
   --algo_name MAPPO ^
-  --model_dir ./data/你的MAPPO目录/model/检查点 ^
-  --max_episode_steps 256
+  --model_dir ./data/MAPPO_seed10_0507_024934/model/310000
 ```
 
 ### 6.2 评估 Meta-MAPPO
 
 ```bash
 D:
-cd D:\Meta-MAPPO\Meta-MAPPO\MAPPO-pro
+cd D:\Meta-MAPPO\Meta-MAPPO\10.0
 python evaluate.py ^
   --algo_name Meta-MAPPO ^
-  --model_dir ./data/你的Meta_MAPPO目录/model/检查点 ^
-  --max_episode_steps 256
+  --model_dir ./data/MetaMAPPO_stable_seed10_lr0005/model/300000
 ```
 
 评估会生成：
@@ -190,8 +188,18 @@ robustness_winrate_Meta-MAPPO.npy
 robustness_reward_MAPPO.npy
 robustness_reward_Meta-MAPPO.npy
 ```
+未见任务泛化实验
+```bash
+D:
+cd D:\Meta-MAPPO\Meta-MAPPO\10.0
+python run_unseen_generalization.py ^
+  --skip_train ^
+  --mappo_model_dir ./data/MAPPO_seed10_0507_024934/model/310000 ^
+  --meta_mappo_model_dir ./data/MetaMAPPO_stable_seed10_lr0005/model/300000 ^
+  --max_episode_steps 256
+```
 
----
+
 
 ## 7. Meta-test 快速适应评估
 
@@ -205,8 +213,8 @@ run_fast_adaptation.py
 
 ```python
 MODEL_DIRS = {
-    "MAPPO": r"./data/你的MAPPO目录/model/检查点",
-    "Meta-MAPPO": r"./data/你的Meta-MAPPO目录/model/检查点",
+    "MAPPO": r"./data/MAPPO_seed10_0507_024934/model/310000",
+    "Meta-MAPPO": r"./data/MetaMAPPO_stable_seed10_lr0005/model/300000",
 }
 ```
 

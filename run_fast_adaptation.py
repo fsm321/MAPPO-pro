@@ -14,8 +14,8 @@ from pathlib import Path
 # norm_mean.npy
 # norm_std.npy
 MODEL_DIRS = {
-    "MAPPO": r"./data/你的MAPPO目录/model/检查点",
-    "Meta-MAPPO": r"./data/你的Meta-MAPPO目录/model/检查点",
+    "MAPPO": r"./data/MAPPO_seed10_0507_024934/model/310000",
+    "Meta-MAPPO": r"./data/MetaMAPPO_stable_seed10_lr0005/model/300000",
 }
 
 

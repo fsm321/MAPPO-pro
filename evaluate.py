@@ -332,8 +332,9 @@ def evaluate_fast_adaptation(args, base_agent, state_norm):
         })
 
     save_name = f"fast_adaptation_metrics_{args.algo_name}.json"
-    with open(save_name, "w", encoding="utf-8") as f:
-        json.dump(results, f, ensure_ascii=False, indent=4)
+    task_suffix = "all" if eval_task is None else f"task{eval_task}"
+    with open(f"combat_metrics_{args.algo_name}_{task_suffix}.json", "w", encoding="utf-8") as f:
+        json.dump(combat_metrics, f, ensure_ascii=False, indent=4)
 
     print(f"\n快速适应评估结果已保存: {save_name}")
     return results
