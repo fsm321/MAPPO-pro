@@ -25,7 +25,7 @@ if __name__ == '__main__':
     # ==========================================
     num_parallel_tasks = 2  # <--- 以后你只需要修改这个数字！
     num_envs = 8
-    max_train_steps = int(5e8)
+    max_train_steps = int(2.56e8)
     num_seeds_to_use = num_parallel_tasks // len(algorithms)
     active_seeds = all_seeds[:num_seeds_to_use]
     run_time = datetime.now().strftime("%m%d_%H%M%S")

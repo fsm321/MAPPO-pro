@@ -330,84 +330,596 @@ class Scenario(BaseScenario):
         world.blue_tactics_signature = signature
         world.blue_tactics_assigned = True
 
-    def blue_action_callback(self, agent, world):
-        action = np.zeros(3)
-        red_agents = [a for a in world.agents if a.team == 0 and not a.is_dead]
-        if agent.is_dead or not red_agents:
-            return action
+    def _wrap_angle(self, angle):
+        """Normalize an angle to [-pi, pi]."""
+        return (angle + math.pi) % (2 * math.pi) - math.pi
 
-        cfg = getattr(world, "task_cfg", TASK_CONFIGS[META_TRAIN_TASK_IDS[0]])
-        my_pos = (agent.state.p_pos[0], agent.state.p_pos[1], agent.state.z_pos)
-        dists = [
-            math.sqrt(
-                (r.state.p_pos[0] - my_pos[0]) ** 2 +
-                (r.state.p_pos[1] - my_pos[1]) ** 2 +
-                (r.state.z_pos - my_pos[2]) ** 2
-            )
-            for r in red_agents
-        ]
-        min_dist, closest_red = min(dists), red_agents[np.argmin(dists)]
-
-        if min_dist > 6.0 and not agent.combat_mode:
-            action[:] = [1.0, 0.0, 0.0]
-        else:
-            agent.combat_mode = True
-            self._assign_blue_tactics(world, cfg)
-
-            rel_p = closest_red.state.p_pos - agent.state.p_pos
-            t_yaw = math.atan2(rel_p[1], rel_p[0])
-            y_diff = (t_yaw - agent.state.yaw + math.pi) % (2 * math.pi) - math.pi
-            z_diff = closest_red.state.z_pos - agent.state.z_pos
-
-            roll_cmd = np.clip(y_diff / (math.pi / 2), -1.0, 1.0)
-            nz_cmd = 0.5 if z_diff > 0 else -0.5
-
-            if agent.tactic == 0:
-                action[:] = [0.8, nz_cmd, roll_cmd]
-
-            elif agent.tactic == 2:
-                f_yaw = t_yaw + math.pi / 2
-                fy_diff = (f_yaw - agent.state.yaw + math.pi) % (2 * math.pi) - math.pi
-                flank_roll = np.clip(fy_diff / (math.pi / 2), -1.0, 1.0)
-                action[:] = [0.8, 0.0, flank_roll]
-
-            elif agent.tactic == 3:
-                altitude_cmd = 0.6 if agent.state.z_pos < 7.0 else 0.0
-                action[:] = [0.6, altitude_cmd, roll_cmd]
-
-            elif agent.tactic == 4:
-                altitude_cmd = -0.6 if agent.state.z_pos > 2.5 else 0.0
-                action[:] = [0.9, altitude_cmd, roll_cmd]
-
-            elif agent.tactic == 5:
-                decoy_yaw = t_yaw + math.pi / 3
-                decoy_diff = (decoy_yaw - agent.state.yaw + math.pi) % (2 * math.pi) - math.pi
-                decoy_roll = np.clip(decoy_diff / (math.pi / 2), -1.0, 1.0)
-
-                if min_dist < 4.0:
-                    action[:] = [-0.2, 0.0, -decoy_roll]
-                else:
-                    action[:] = [0.5, 0.0, decoy_roll]
-
-            elif agent.tactic == 6:
-                if min_dist < 5.0:
-                    evade_yaw = t_yaw + math.pi
-                    evade_diff = (evade_yaw - agent.state.yaw + math.pi) % (2 * math.pi) - math.pi
-                    evade_roll = np.clip(evade_diff / (math.pi / 2), -1.0, 1.0)
-                    action[:] = [0.4, nz_cmd, evade_roll]
-                else:
-                    action[:] = [0.7, nz_cmd, roll_cmd]
-
-            else:
-                action[:] = [0.8, nz_cmd, roll_cmd]
+    def _scale_blue_action(self, action, cfg):
+        """
+        Scale a blue-team action with the existing task-level multipliers.
+        This keeps the original blue_speed_scale / blue_turn_scale behavior.
+        """
+        action = np.asarray(action, dtype=np.float32).copy()
 
         action[0] *= cfg.get("blue_speed_scale", 1.0)
         action[1] *= cfg.get("blue_turn_scale", 1.0)
         action[2] *= cfg.get("blue_turn_scale", 1.0)
 
-        noise_std = cfg.get("blue_noise", 0.15)
-        action += np.random.normal(0, noise_std, size=3)
         return np.clip(action, -1.0, 1.0)
+
+    def _predict_blue_next_state(self, agent, action, world):
+        """
+        Predict the next blue state with a simplified one-step model that
+        matches World.update_agent_state closely enough for greedy scoring.
+
+        This forward model never mutates the real environment state.
+        """
+        action = np.asarray(action, dtype=float)
+
+        g_eff = 1.0
+        dt = getattr(world, "dt", 0.1)
+
+        n_x = 2.0 * np.clip(action[0], -1.0, 1.0)
+        n_z = 1.0 + 3.0 * np.clip(action[1], -1.0, 1.0)
+        roll_cmd = (math.pi / 2.0) * np.clip(action[2], -1.0, 1.0)
+
+        current_roll = getattr(agent.state, "roll", 0.0)
+        current_pitch = getattr(agent.state, "pitch", 0.0)
+        current_yaw = getattr(agent.state, "yaw", 0.0)
+        current_v = getattr(agent.state, "p_vel", 1.0)
+
+        roll_rate_limit = math.pi / 2.0
+        roll_error = roll_cmd - current_roll
+        roll_step = np.clip(roll_error, -roll_rate_limit * dt, roll_rate_limit * dt)
+
+        next_roll = current_roll + roll_step
+        next_roll = np.clip(next_roll, -math.pi / 2.0, math.pi / 2.0)
+
+        v = max(current_v, 0.3)
+        gamma = current_pitch
+        phi = next_roll
+
+        v_dot = g_eff * (n_x - math.sin(gamma))
+        pitch_dot = (g_eff / v) * (n_z * math.cos(phi) - math.cos(gamma))
+
+        cos_gamma = max(abs(math.cos(gamma)), 0.2)
+        yaw_dot = (g_eff * n_z * math.sin(phi)) / (v * cos_gamma)
+
+        # Keep the same blue-team maneuver disadvantage as the real dynamics.
+        yaw_dot *= 0.8
+        v_max = 2.5
+
+        next_v = np.clip(current_v + v_dot * dt, 0.5, v_max)
+        next_pitch = np.clip(current_pitch + pitch_dot * dt, -math.pi / 3, math.pi / 3)
+
+        next_yaw = current_yaw + yaw_dot * dt
+        next_yaw = self._wrap_angle(next_yaw)
+
+        vx = next_v * math.cos(next_yaw) * math.cos(next_pitch)
+        vy = next_v * math.sin(next_yaw) * math.cos(next_pitch)
+        vz = next_v * math.sin(next_pitch)
+
+        next_xy = agent.state.p_pos + np.array([vx * dt, vy * dt])
+        next_z = agent.state.z_pos + vz * dt
+
+        return next_xy, next_z, next_yaw, next_pitch, next_roll, next_v
+
+    def _blue_guidance_candidates(self, agent, red_agents):
+        """
+        Build heuristic action candidates from the current target geometry.
+        These are search candidates, not final actions.
+        """
+        candidates = []
+
+        for target in red_agents:
+            rel_p = target.state.p_pos - agent.state.p_pos
+            target_yaw = math.atan2(rel_p[1], rel_p[0])
+            yaw_diff = self._wrap_angle(target_yaw - agent.state.yaw)
+
+            z_diff = target.state.z_pos - agent.state.z_pos
+
+            roll_to_target = np.clip(yaw_diff / (math.pi / 2), -1.0, 1.0)
+            nz_to_target = 0.5 if z_diff > 0 else -0.5
+
+            # Direct pursuit.
+            chase = np.array([0.8, nz_to_target, roll_to_target], dtype=np.float32)
+
+            # More aggressive pursuit.
+            aggressive_chase = np.array([1.0, nz_to_target, roll_to_target], dtype=np.float32)
+
+            # Lateral flanking motion.
+            flank_yaw = target_yaw + math.pi / 2
+            flank_diff = self._wrap_angle(flank_yaw - agent.state.yaw)
+            flank_roll = np.clip(flank_diff / (math.pi / 2), -1.0, 1.0)
+            flank = np.array([0.8, 0.0, flank_roll], dtype=np.float32)
+
+            # Reverse escape motion.
+            evade_yaw = target_yaw + math.pi
+            evade_diff = self._wrap_angle(evade_yaw - agent.state.yaw)
+            evade_roll = np.clip(evade_diff / (math.pi / 2), -1.0, 1.0)
+            evade = np.array([0.4, nz_to_target, evade_roll], dtype=np.float32)
+
+            # Offset decoy motion.
+            decoy_yaw = target_yaw + math.pi / 3
+            decoy_diff = self._wrap_angle(decoy_yaw - agent.state.yaw)
+            decoy_roll = np.clip(decoy_diff / (math.pi / 2), -1.0, 1.0)
+            decoy = np.array([0.5, 0.0, decoy_roll], dtype=np.float32)
+
+            candidates.extend([
+                chase,
+                aggressive_chase,
+                flank,
+                evade,
+                decoy,
+            ])
+
+        return candidates
+
+    def _blue_candidate_actions(self, agent, world, cfg, red_agents):
+        """
+        Construct the greedy-search candidate set for a blue agent.
+        The set combines a small discrete action grid and tactic-biased samples.
+        """
+        candidates = []
+
+        # Cover acceleration, climb/descent, and roll directions.
+        speed_cmds = [0.3, 0.6, 0.9, 1.0]
+        nz_cmds = [-0.6, 0.0, 0.6]
+        roll_cmds = [-1.0, -0.5, 0.0, 0.5, 1.0]
+
+        for nx in speed_cmds:
+            for nz in nz_cmds:
+                for roll in roll_cmds:
+                    candidates.append(np.array([nx, nz, roll], dtype=np.float32))
+
+        # Add target-oriented heuristic actions to improve search quality.
+        candidates.extend(self._blue_guidance_candidates(agent, red_agents))
+
+        # Keep task diversity by biasing the candidate set with tactic-specific samples.
+        tactic = getattr(agent, "tactic", 0)
+
+        if tactic == 2:
+            # Favor flanking turns.
+            candidates.extend([
+                np.array([0.8, 0.0, 1.0], dtype=np.float32),
+                np.array([0.8, 0.0, -1.0], dtype=np.float32),
+            ])
+
+        elif tactic == 3:
+            # High-altitude layer: bias toward climbing with attack-oriented turns.
+            candidates.extend([
+                np.array([0.6, 0.6, 1.0], dtype=np.float32),
+                np.array([0.6, 0.6, -1.0], dtype=np.float32),
+                np.array([0.8, 0.6, 0.5], dtype=np.float32),
+                np.array([0.8, 0.6, -0.5], dtype=np.float32),
+                np.array([0.6, 0.8, 0.0], dtype=np.float32),
+            ])
+
+        elif tactic == 4:
+            # Low-altitude layer: bias toward descent with attack-oriented turns.
+            candidates.extend([
+                np.array([0.8, -0.6, 1.0], dtype=np.float32),
+                np.array([0.8, -0.6, -1.0], dtype=np.float32),
+                np.array([0.9, -0.6, 0.5], dtype=np.float32),
+                np.array([0.9, -0.6, -0.5], dtype=np.float32),
+                np.array([0.9, -0.8, 0.0], dtype=np.float32),
+            ])
+
+        elif tactic == 5:
+            # Favor decoy or disturbance motion.
+            candidates.extend([
+                np.array([0.5, 0.0, 0.8], dtype=np.float32),
+                np.array([0.5, 0.0, -0.8], dtype=np.float32),
+                np.array([-0.2, 0.0, 0.8], dtype=np.float32),
+                np.array([-0.2, 0.0, -0.8], dtype=np.float32),
+            ])
+
+        elif tactic == 6:
+            # Favor defensive escape motion.
+            candidates.extend([
+                np.array([0.4, 0.5, 1.0], dtype=np.float32),
+                np.array([0.4, 0.5, -1.0], dtype=np.float32),
+                np.array([0.3, -0.5, 1.0], dtype=np.float32),
+                np.array([0.3, -0.5, -1.0], dtype=np.float32),
+            ])
+
+        # Deduplicate candidates before scoring.
+        unique_candidates = []
+        seen = set()
+
+        for action in candidates:
+            action = np.clip(action, -1.0, 1.0)
+            key = tuple(np.round(action, 3))
+            if key not in seen:
+                seen.add(key)
+                unique_candidates.append(action)
+
+        return unique_candidates
+
+    def _blue_tactic_weights(self, tactic):
+        """
+        Change greedy-scoring weights by tactic instead of hard-coding actions.
+        This keeps the controller greedy while preserving task differences.
+        """
+        if tactic == 2:
+            # Flank: emphasize heading geometry and lateral motion.
+            return {
+                "attack": 1.0,
+                "angle": 1.2,
+                "distance": 0.9,
+                "threat": 1.0,
+                "smooth": 1.0,
+                "boundary": 1.0,
+                "altitude": 0.0,
+            }
+
+        if tactic == 3:
+            # High-altitude layer: value altitude control and angle quality.
+            return {
+                "attack": 1.0,
+                "angle": 1.15,
+                "distance": 0.85,
+                "threat": 1.0,
+                "smooth": 1.0,
+                "boundary": 1.1,
+                "altitude": 1.2,
+            }
+
+        if tactic == 4:
+            # Low-altitude layer: value penetration and distance closing.
+            return {
+                "attack": 1.15,
+                "angle": 1.0,
+                "distance": 1.1,
+                "threat": 1.1,
+                "smooth": 1.0,
+                "boundary": 1.1,
+                "altitude": 1.2,
+            }
+
+        if tactic == 5:
+            # Decoy: emphasize survival and disturbance.
+            return {
+                "attack": 0.85,
+                "angle": 1.0,
+                "distance": 0.8,
+                "threat": 1.3,
+                "smooth": 0.8,
+                "boundary": 1.0,
+                "altitude": 0.0,
+            }
+
+        if tactic == 6:
+            # Defensive counter: strongly avoid red attack envelopes.
+            return {
+                "attack": 0.8,
+                "angle": 0.9,
+                "distance": 0.8,
+                "threat": 1.8,
+                "smooth": 1.0,
+                "boundary": 1.0,
+                "altitude": 0.0,
+            }
+
+        # Default offensive bias.
+        return {
+            "attack": 1.2,
+            "angle": 1.0,
+            "distance": 1.0,
+            "threat": 1.0,
+            "smooth": 1.0,
+            "boundary": 1.0,
+            "altitude": 0.0,
+        }
+
+    def _blue_target_priority_score(self, blue, red):
+        """
+        Score how suitable a red agent is as the current target of a blue agent.
+        The heuristic prefers closer targets, better heading geometry, and lower hp.
+        """
+        distance, ata = fast_compute_distance_and_angle_scalar(
+            blue.state.p_pos[0], blue.state.p_pos[1], blue.state.z_pos,
+            red.state.p_pos[0], red.state.p_pos[1], red.state.z_pos,
+            blue.state.yaw, blue.state.pitch
+        )
+
+        target_hp = getattr(red, "hp", 100.0)
+        distance_score = -2.0 * distance
+        angle_score = 12.0 * max(0.0, 1.0 - ata / math.pi)
+        hp_score = 0.15 * (100.0 - target_hp)
+
+        return distance_score + angle_score + hp_score
+
+    def _assign_blue_targets(self, world, blue_agents, red_agents):
+        """
+        Assign blue agents to red targets.
+
+        If only one red is alive, all blues focus that target.
+        If two reds are alive, use a one-to-one assignment to avoid duplicate pursuit.
+        """
+        assignments = {}
+
+        live_blues = [agent for agent in blue_agents if not agent.is_dead]
+        live_reds = [agent for agent in red_agents if not agent.is_dead]
+
+        if not live_blues or not live_reds:
+            return assignments
+
+        live_blues = sorted(live_blues, key=lambda blue: blue.name)
+        live_reds = sorted(live_reds, key=lambda red: red.name)
+
+        if len(live_reds) == 1:
+            for blue in live_blues:
+                assignments[blue] = live_reds[0]
+            return assignments
+
+        if len(live_blues) == 1:
+            best_red = max(
+                live_reds,
+                key=lambda red: self._blue_target_priority_score(live_blues[0], red)
+            )
+            assignments[live_blues[0]] = best_red
+            return assignments
+
+        # In the 2v2 case, evaluate one-to-one matchings and keep the best total score.
+        best_total_score = -1e18
+        best_pairing = None
+        first_blue = live_blues[0]
+        second_blue = live_blues[1]
+
+        for first_red in live_reds:
+            for second_red in live_reds:
+                if second_red is first_red:
+                    continue
+
+                total_score = (
+                    self._blue_target_priority_score(first_blue, first_red)
+                    + self._blue_target_priority_score(second_blue, second_red)
+                )
+
+                if total_score > best_total_score:
+                    best_total_score = total_score
+                    best_pairing = (first_red, second_red)
+
+        if best_pairing is not None:
+            assignments[first_blue] = best_pairing[0]
+            assignments[second_blue] = best_pairing[1]
+
+            for blue in live_blues[2:]:
+                best_red = max(
+                    live_reds,
+                    key=lambda red: self._blue_target_priority_score(blue, red)
+                )
+                assignments[blue] = best_red
+
+            return assignments
+
+        # Fallback: if the one-to-one assignment fails, each blue picks its best target.
+        for blue in live_blues:
+            best_red = max(
+                live_reds,
+                key=lambda red: self._blue_target_priority_score(blue, red)
+            )
+            assignments[blue] = best_red
+
+        return assignments
+
+    def _blue_greedy_score(self, agent, world, target, action, cfg):
+        """
+        Compute the one-step greedy utility J(a) for a blue action.
+        Higher scores indicate better immediate utility under the current state.
+        """
+        next_xy, next_z, next_yaw, next_pitch, _, _ = self._predict_blue_next_state(
+            agent,
+            action,
+            world
+        )
+
+        tactic = getattr(agent, "tactic", 0)
+        weights = self._blue_tactic_weights(tactic)
+
+        blue_attack_range = cfg.get("blue_attack_range", 3.5)
+        blue_attack_angle = cfg.get("blue_attack_angle", math.pi / 6)
+
+        red_attack_range = cfg.get("red_attack_range", 4.5)
+        red_attack_angle = cfg.get("red_attack_angle", math.pi / 4)
+
+        # Evaluate the predicted blue attack geometry on the chosen target.
+        distance, ata = fast_compute_distance_and_angle_scalar(
+            next_xy[0], next_xy[1], next_z,
+            target.state.p_pos[0], target.state.p_pos[1], target.state.z_pos,
+            next_yaw, next_pitch
+        )
+
+        in_attack_zone = distance < blue_attack_range and ata < blue_attack_angle
+
+        # Increase the attack bonus so blue does not over-prefer safe stalling.
+        attack_score = 150.0 if in_attack_zone else 0.0
+
+        # Low-health targets get a finishing bonus.
+        target_hp = getattr(target, "hp", 100.0)
+        if in_attack_zone and target_hp <= 20.0:
+            attack_score += 40.0
+
+        # Better nose-on-target geometry gets a higher score.
+        angle_score = 10.0 * max(0.0, 1.0 - ata / math.pi)
+
+        # Favor an effective attack distance instead of minimum distance.
+        desired_dist = 0.75 * blue_attack_range
+        distance_score = -2.0 * abs(distance - desired_dist)
+
+        # Penalize future states that fall into red attack envelopes.
+        threat_penalty = 0.0
+
+        live_reds = [a for a in world.agents if a.team == 0 and not a.is_dead]
+        for red in live_reds:
+            red_dist, red_ata = fast_compute_distance_and_angle_scalar(
+                red.state.p_pos[0], red.state.p_pos[1], red.state.z_pos,
+                next_xy[0], next_xy[1], next_z,
+                red.state.yaw, red.state.pitch
+            )
+
+            if red_dist < red_attack_range and red_ata < red_attack_angle:
+                threat_penalty += 70.0
+            else:
+                # Apply a softer penalty when approaching the red attack zone.
+                near_factor = max(
+                    0.0,
+                    (red_attack_range + 1.0 - red_dist) / (red_attack_range + 1.0)
+                )
+                angle_factor = max(
+                    0.0,
+                    (red_attack_angle + 0.5 - red_ata) / (red_attack_angle + 0.5)
+                )
+                threat_penalty += 20.0 * near_factor * angle_factor
+
+        # Penalize hard boundary violations and risky altitude extremes.
+        boundary_penalty = 0.0
+        if abs(next_xy[0]) > 8.0 or abs(next_xy[1]) > 8.0 or next_z < 1.0 or next_z > 9.0:
+            boundary_penalty += 80.0
+
+        if next_z < 1.5 or next_z > 8.5:
+            boundary_penalty += 20.0
+
+        # Keep tactic 3/4 separated with altitude-layer preferences.
+        altitude_score = 0.0
+        if tactic == 3:
+            desired_altitude = 7.2
+            altitude_score = -5.0 * abs(next_z - desired_altitude)
+        elif tactic == 4:
+            desired_altitude = 2.8
+            altitude_score = -5.0 * abs(next_z - desired_altitude)
+
+        # Penalize large step-to-step action changes to reduce jitter.
+        last_action = getattr(agent, "last_action", np.zeros(3))
+        smooth_penalty = np.sum(np.square(action - last_action))
+
+        score = (
+            weights["attack"] * attack_score
+            + weights["angle"] * angle_score
+            + weights["distance"] * distance_score
+            + weights["altitude"] * altitude_score
+            - weights["threat"] * threat_penalty
+            - weights["boundary"] * boundary_penalty
+            - weights["smooth"] * 0.5 * smooth_penalty
+        )
+
+        return score
+
+    def blue_action_callback(self, agent, world):
+        """
+        Greedy blue-team controller.
+
+        Per step:
+        1. Collect live red targets.
+        2. Build a finite candidate action set.
+        3. Predict one-step outcomes for each candidate.
+        4. Evaluate J(a) for each candidate.
+        5. Execute the argmax candidate.
+
+        Usage:
+        World.step calls this automatically through
+        agent.action_callback(agent, world).
+        """
+        action = np.zeros(3, dtype=np.float32)
+
+        red_agents = [a for a in world.agents if a.team == 0 and not a.is_dead]
+        if agent.is_dead or not red_agents:
+            return action
+
+        cfg = getattr(world, "task_cfg", TASK_CONFIGS[META_TRAIN_TASK_IDS[0]])
+
+        # Preserve the original task-driven tactic switching mechanism.
+        self._assign_blue_tactics(world, cfg)
+
+        blue_agents = [a for a in world.agents if a.team == 1 and not a.is_dead]
+        assigned_targets = self._assign_blue_targets(
+            world=world,
+            blue_agents=blue_agents,
+            red_agents=red_agents
+        )
+        assigned_target = assigned_targets.get(agent, None)
+
+        # Record close combat entry without reverting the original flag behavior.
+        my_pos = (agent.state.p_pos[0], agent.state.p_pos[1], agent.state.z_pos)
+        dists = [
+            math.sqrt(
+                (r.state.p_pos[0] - my_pos[0]) ** 2
+                + (r.state.p_pos[1] - my_pos[1]) ** 2
+                + (r.state.z_pos - my_pos[2]) ** 2
+            )
+            for r in red_agents
+        ]
+
+        min_dist = min(dists)
+        if min_dist <= 6.0:
+            agent.combat_mode = True
+
+        # Keep a direct close-in behavior at long range to avoid weak opening motion.
+        if min_dist > 8.0 and not agent.combat_mode:
+            target_red = assigned_target if assigned_target is not None else red_agents[np.argmin(dists)]
+            rel_p = target_red.state.p_pos - agent.state.p_pos
+            target_yaw = math.atan2(rel_p[1], rel_p[0])
+            yaw_diff = self._wrap_angle(target_yaw - agent.state.yaw)
+            roll_cmd = np.clip(yaw_diff / (math.pi / 2), -1.0, 1.0)
+
+            z_diff = target_red.state.z_pos - agent.state.z_pos
+            nz_cmd = 0.4 if z_diff > 0 else -0.4
+
+            action = np.array([1.0, nz_cmd, roll_cmd], dtype=np.float32)
+            action = self._scale_blue_action(action, cfg)
+
+            noise_std = cfg.get("blue_noise", 0.15)
+            action = action + np.random.normal(0, noise_std, size=3)
+
+            return np.clip(action, -1.0, 1.0)
+
+        candidate_actions = self._blue_candidate_actions(
+            agent=agent,
+            world=world,
+            cfg=cfg,
+            red_agents=red_agents
+        )
+
+        best_action = None
+        best_score = -1e18
+
+        # Greedy selection: keep the action with the best immediate utility.
+        for raw_action in candidate_actions:
+            scaled_action = self._scale_blue_action(raw_action, cfg)
+
+            if assigned_target is not None:
+                action_score = self._blue_greedy_score(
+                    agent=agent,
+                    world=world,
+                    target=assigned_target,
+                    action=scaled_action,
+                    cfg=cfg
+                )
+            else:
+                action_score = max([
+                    self._blue_greedy_score(
+                        agent=agent,
+                        world=world,
+                        target=target,
+                        action=scaled_action,
+                        cfg=cfg
+                    )
+                    for target in red_agents
+                ])
+
+            if action_score > best_score:
+                best_score = action_score
+                best_action = scaled_action
+
+        if best_action is None:
+            best_action = np.array([0.8, 0.0, 0.0], dtype=np.float32)
+
+        # Keep the task-configured blue noise for disturbance-style tasks.
+        noise_std = cfg.get("blue_noise", 0.15)
+        best_action = best_action + np.random.normal(0, noise_std, size=3)
+
+        return np.clip(best_action, -1.0, 1.0)
 
     def _mark_red_team_done(self, world):
         for teammate in world.agents:
