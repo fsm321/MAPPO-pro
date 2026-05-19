@@ -290,17 +290,17 @@ def main(args, seed):
                 )
 
                 if buffer_ready:
-                    #progress = min(total_steps / args.max_train_steps, 1.0)
-                    #current_performance = sum(win_history) / len(win_history) if len(win_history) > 0 else 0.0
-                    meta_lr = args.meta_lr
-                    #if current_performance < 0.35:
-                    #    meta_lr = 0.08 * (1.0 - progress ** 0.5)
-                    #elif current_performance > 0.70:
-                    #    meta_lr = 0.05 * (1.0 - progress ** 1.5)
-                    #else:
-                    #    meta_lr = 0.06 * (1.0 - progress)
+                    progress = min(total_steps / args.max_train_steps, 1.0)
+                    current_performance = sum(win_history) / len(win_history) if len(win_history) > 0 else 0.0
 
-                    #meta_lr = max(meta_lr, 1e-4)
+                    if current_performance < 0.35:
+                        meta_lr = 0.08 * (1.0 - progress ** 0.5)
+                    elif current_performance > 0.70:
+                        meta_lr = 0.05 * (1.0 - progress ** 1.5)
+                    else:
+                        meta_lr = 0.06 * (1.0 - progress)
+
+                    meta_lr = max(meta_lr, 1e-4)
 
                     sl_a, sl_c, ql_a, ql_c = shared_agent.meta_train_step(
                         support_buffer=support_buffer,

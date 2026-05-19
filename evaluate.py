@@ -32,10 +32,10 @@ def build_eval_task_onehot(task_id, task_dim):
     评估/快速适应阶段的 task code。
 
     训练任务 T0~T5：使用正常 one-hot。
-    测试任务 U0~U4：使用全零向量，表示 unknown task。
+    测试任务 U0~U7：使用全零向量，表示 unknown task。
 
     这样不会泄露 meta-test 任务标签，也不会触发
-    get_train_task_encoder_index(task_id) 对 U0~U4 报错。
+    get_train_task_encoder_index(task_id) 对 U0~U7 报错。
     """
     task_id = int(task_id)
     task_onehot = np.zeros(task_dim, dtype=np.float32)
@@ -220,7 +220,7 @@ def parse_task_ids(task_string):
 
 def evaluate_fast_adaptation(args, base_agent, state_norm):
     """
-    对 U0~U4 做快速适应评估：
+    对 U0~U7 做快速适应评估：
     1. 原模型直接评估；
     2. 复制模型；
     3. support episodes 上快速适应；
@@ -575,7 +575,7 @@ if __name__ == '__main__':
     parser.add_argument("--eval_task", type=int, default=-1)
     parser.add_argument("--eval_adaptation", action="store_true")
     parser.add_argument("--only_adaptation", action="store_true")
-    parser.add_argument("--adapt_tasks", type=str, default="6,7,8,9,10")
+    parser.add_argument("--adapt_tasks", type=str, default="6,7,8,9,10,11,12,13")
     parser.add_argument("--adapt_support_episodes", type=int, default=5)
     parser.add_argument("--adapt_query_episodes", type=int, default=100)
     parser.add_argument("--adapt_epochs", type=int, default=3)

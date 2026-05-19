@@ -54,6 +54,16 @@ def add_bar_labels(ax, bars, values, fmt="{:.2f}"):
         )
 
 
+def ensure_percent(data):
+    """
+    将胜率统一为百分比单位，兼容 0.82 和 82 两种保存格式。
+    """
+    data = np.asarray(data, dtype=float)
+    if data.size > 0 and np.nanmax(data) <= 1.5:
+        data = data * 100.0
+    return data
+
+
 def plot_combat_metrics(mappo_metrics, meta_metrics):
     """
     最终作战效能对比图。
@@ -169,43 +179,59 @@ def plot_combat_metrics(mappo_metrics, meta_metrics):
 def plot_combined_robustness():
     """
     抗干扰能力测试对比：
-    横轴为观测噪声标准差，纵轴为每个噪声强度下的平均胜率。
+    横轴为观测噪声标准差，纵轴为对应噪声强度下的空战胜率。
     """
-    noise_levels = [0.0, 0.1, 0.2, 0.3, 0.5]
+    noise_levels = np.array([0.0, 0.1, 0.2, 0.3, 0.5])
 
     try:
-        mappo_data = np.load("robustness_winrate_MAPPO.npy")
-        meta_data = np.load("robustness_winrate_Meta-MAPPO.npy")
+        mappo_data = ensure_percent(np.load("robustness_winrate_MAPPO.npy"))
+        meta_data = ensure_percent(np.load("robustness_winrate_Meta-MAPPO.npy"))
     except FileNotFoundError:
         print("未找到 robustness_winrate_xxx.npy，跳过鲁棒性胜率图。")
         print("请先运行 evaluate.py 生成噪声鲁棒性胜率数据。")
         return
 
-    plt.figure(figsize=(8, 6))
+    x = np.arange(len(noise_levels))
+    width = 0.36
 
-    plt.plot(
-        noise_levels,
+    plt.figure(figsize=(8.5, 5.8))
+
+    bars1 = plt.bar(
+        x - width / 2,
         mappo_data,
-        marker="s",
-        markersize=8,
-        linewidth=2.5,
+        width,
+        label="MAPPO",
         color="#4C72B0",
-        label="MAPPO"
+        edgecolor="black",
+        linewidth=1.0
     )
 
-    plt.plot(
-        noise_levels,
+    bars2 = plt.bar(
+        x + width / 2,
         meta_data,
-        marker="o",
-        markersize=8,
-        linewidth=2.5,
+        width,
+        label="Meta-MAPPO",
         color="#DD8452",
-        label="Meta-MAPPO"
+        edgecolor="black",
+        linewidth=1.0
     )
+
+    for bars in [bars1, bars2]:
+        for bar in bars:
+            height = bar.get_height()
+            plt.text(
+                bar.get_x() + bar.get_width() / 2,
+                height + 1.0,
+                f"{height:.1f}%",
+                ha="center",
+                va="bottom",
+                fontsize=10
+            )
 
     plt.xlabel("观测噪声标准差", fontsize=13)
-    plt.ylabel("平均胜率 (%)", fontsize=13)
-    plt.title("不同观测噪声强度下的胜率对比", fontsize=15, fontweight="bold", pad=15)
+    plt.ylabel("空战胜率 (%)", fontsize=13)
+    plt.title("不同观测噪声强度下的空战胜率对比", fontsize=15, fontweight="bold", pad=15)
+    plt.xticks(x, [str(v) for v in noise_levels])
     plt.ylim(0, 100)
     plt.legend(fontsize=12, loc="best")
     plt.tight_layout()
@@ -288,11 +314,10 @@ if __name__ == "__main__":
     try:
         MAPPO_METRICS = load_combat_metrics("MAPPO")
         META_MAPPO_METRICS = load_combat_metrics("Meta-MAPPO")
-    except FileNotFoundError as e:
-        print(e)
-        raise SystemExit(1)
-
-    plot_combat_metrics(MAPPO_METRICS, META_MAPPO_METRICS)
+        plot_combat_metrics(MAPPO_METRICS, META_MAPPO_METRICS)
+    except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
+        print(f"综合作战指标图跳过: {e}")
+        print("将继续生成鲁棒性胜率图和失效恢复图。")
 
     # 这两个图是辅助实验，有数据就画，没有数据就自动跳过
     plot_combined_robustness()

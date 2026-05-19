@@ -6,7 +6,7 @@ from env._mpe_utils.scenario import BaseScenario
 
 
 META_TRAIN_TASK_IDS = [0, 1, 2, 3, 4, 5]
-META_TEST_TASK_IDS = [6, 7, 8, 9, 10]
+META_TEST_TASK_IDS = [6, 7, 8, 9, 10, 11, 12, 13]
 ALL_TASK_IDS = META_TRAIN_TASK_IDS + META_TEST_TASK_IDS
 TRAIN_TASK_ENCODER_INDEX = {
     task_id: idx for idx, task_id in enumerate(META_TRAIN_TASK_IDS)
@@ -164,6 +164,42 @@ TASK_CONFIGS = {
         "red_attack_angle": math.pi / 4,
         "init_mode": "head_on",
     },
+    11: {
+        "name": "U5_head_on_neutral",
+        "blue_tactics": [0, 0],
+        "blue_noise": 0.12,
+        "blue_speed_scale": 1.0,
+        "blue_turn_scale": 1.0,
+        "blue_attack_range": 3.5,
+        "blue_attack_angle": math.pi / 6,
+        "red_attack_range": 4.5,
+        "red_attack_angle": math.pi / 4,
+        "init_mode": "head_on_neutral",
+    },
+    12: {
+        "name": "U6_disadvantage_tail_chase",
+        "blue_tactics": [0, 0],
+        "blue_noise": 0.12,
+        "blue_speed_scale": 1.0,
+        "blue_turn_scale": 1.0,
+        "blue_attack_range": 3.5,
+        "blue_attack_angle": math.pi / 6,
+        "red_attack_range": 4.5,
+        "red_attack_angle": math.pi / 4,
+        "init_mode": "disadvantage_tail_chase",
+    },
+    13: {
+        "name": "U7_spatial_constraint",
+        "blue_tactics": [0, 0],
+        "blue_noise": 0.12,
+        "blue_speed_scale": 1.0,
+        "blue_turn_scale": 1.0,
+        "blue_attack_range": 3.5,
+        "blue_attack_angle": math.pi / 6,
+        "red_attack_range": 4.5,
+        "red_attack_angle": math.pi / 4,
+        "init_mode": "spatial_constraint",
+    },
 }
 
 
@@ -269,6 +305,41 @@ class Scenario(BaseScenario):
                 ])
                 agent.state.yaw = math.pi + np.random.uniform(-0.2, 0.2)
             agent.state.z_pos = np.random.uniform(3.5, 6.5)
+
+        elif init_mode == "head_on_neutral":
+            # U5: fixed head-on neutral formation for meta-test only.
+            if agent.team == 0:
+                y_pos = -1.5 if idx == 0 else 1.5
+                agent.state.p_pos = np.array([-5.0, y_pos])
+                agent.state.yaw = 0.0
+            else:
+                y_pos = -1.5 if idx == 2 else 1.5
+                agent.state.p_pos = np.array([5.0, y_pos])
+                agent.state.yaw = math.pi
+            agent.state.z_pos = 5.0
+
+        elif init_mode == "disadvantage_tail_chase":
+            # U6: red starts ahead of blue, testing recovery from tail pressure.
+            if agent.team == 0:
+                y_pos = 1.5 if idx == 0 else -1.5
+                agent.state.p_pos = np.array([-1.5, y_pos])
+            else:
+                y_pos = 1.5 if idx == 2 else -1.5
+                agent.state.p_pos = np.array([-5.5, y_pos])
+            agent.state.z_pos = 5.0
+            agent.state.yaw = 0.0
+
+        elif init_mode == "spatial_constraint":
+            # U7: symmetric entry around a constrained center corridor.
+            if agent.team == 0:
+                y_pos = -2.0 if idx == 0 else 2.0
+                agent.state.p_pos = np.array([-5.0, y_pos])
+                agent.state.yaw = 0.0
+            else:
+                y_pos = -2.0 if idx == 2 else 2.0
+                agent.state.p_pos = np.array([5.0, y_pos])
+                agent.state.yaw = math.pi
+            agent.state.z_pos = 5.0
 
         else:
             agent.state.p_pos = np.random.uniform(-5.0, 5.0, 2)

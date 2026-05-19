@@ -192,7 +192,7 @@ robustness_reward_Meta-MAPPO.npy
 ```bash
 D:
 cd D:\Meta-MAPPO\Meta-MAPPO\10.0
-python run_unseen_generalization.py ^
+python run_unseen_winrate.py ^
   --skip_train ^
   --mappo_model_dir ./data/MAPPO_seed10_0507_024934/model/310000 ^
   --meta_mappo_model_dir ./data/MetaMAPPO_stable_seed10_lr0005/model/300000 ^
